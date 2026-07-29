@@ -9,6 +9,7 @@
 )]
 
 mod aac;
+mod audin;
 mod audio;
 mod auth;
 mod auth_guard;
@@ -612,6 +613,17 @@ struct Args {
     /// docs/rdp-camera-redirection-feasibility.md.
     #[arg(long)]
     enable_camera_redirection: bool,
+
+    /// EXPERIMENTAL, opt-in (default OFF). Microphone / audio-input redirection
+    /// (MS-RDPEAI) — **Phase 0 protocol gate only**. Advertises the `AUDIO_INPUT`
+    /// DVC and negotiates + logs the client streaming its microphone (a standalone
+    /// mic, or a webcam's built-in mic) so we can confirm a client hands macrdp a
+    /// mic over a server-direction DVC. It does NOT present a macOS microphone yet
+    /// (no virtual audio device). The client must opt in too (mstsc: Remote audio ->
+    /// Settings -> "Record from this computer"; FreeRDP: /microphone). Cross-platform
+    /// (pure protocol). See TODO.md ("Microphone / audio-input redirection").
+    #[arg(long)]
+    enable_microphone_redirection: bool,
 
     /// EXPERIMENTAL, opt-in (default OFF). Offer RDP UDP multitransport
     /// (MS-RDPEMT over reliable RDPEUDP) to clients that advertise it, and bind a
@@ -2328,6 +2340,9 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("ENABLE_CAMERA_REDIRECTION", false) {
         argv.push("--enable-camera-redirection".into());
     }
+    if on("ENABLE_MICROPHONE_REDIRECTION", false) {
+        argv.push("--enable-microphone-redirection".into());
+    }
     if on("ENABLE_UDP_MULTITRANSPORT", false) {
         argv.push("--enable-udp-multitransport".into());
     }
@@ -3378,6 +3393,15 @@ async fn async_main() -> Result<()> {
             None
         };
 
+    // MS-RDPEAI microphone / audio-input redirection (Phase-0 gate). The AUDIO_INPUT
+    // DVC is advertised only when the flag is set; inert (byte-identical) when off.
+    let audin_factory: Option<Box<dyn ironrdp_server::AudinServerFactory>> =
+        if args.enable_microphone_redirection {
+            Some(Box::new(audin::MacAudin::new()))
+        } else {
+            None
+        };
+
     // Auth hardening (Tier 1.2): per-IP rate-limit + lockout + audit log via the
     // server's pre-handshake/post-disconnect ConnectionHandler seam. On by default
     // (MACRDP_CONN_GUARD=0 disables).
@@ -3403,6 +3427,7 @@ async fn async_main() -> Result<()> {
         .with_rdpdr_factory(rdpdr_factory)
         .with_usb_factory(usb_factory)
         .with_camera_factory(camera_factory)
+        .with_audin_factory(audin_factory)
         .with_bitmap_codecs(bitmap_codecs())
         .with_gfx_factory(gfx_factory)
         .with_connection_handler(conn_handler)
