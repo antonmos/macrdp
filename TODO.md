@@ -133,14 +133,27 @@ then delete; promote a parked item to *In flight* when work actually starts.
     **P1 ✅ DONE + LIVE-VERIFIED** (2026-09-01) — `MACRDP_MIC_DUMP=1` writes the received PCM to a WAV under
     `$TMPDIR` (`src/audin/wav_dump.rs`, behind the `AudinSampleSink` seam); verified real 17 s mono 44.1 kHz
     voice (peak 100 % / RMS 2803 / 72 % active). **P2 — the `AudioServerPlugIn` virtual mic** (route A, C, no
-    entitlement), sub-phased: **P2a ✅ BUILT** (2026-09-01) — the HAL plug-in skeleton presenting "macrdp
+    entitlement), sub-phased: **P2a ✅ DONE + LIVE-VERIFIED GREEN** (2026-09-01) — the HAL plug-in skeleton presenting "macrdp
     Microphone" with an internal 440 Hz test tone (`audioplugin/macrdp_mic.c` + `packaging/make-audio-plugin.sh`
-    + `packaging/install-audio-plugin.sh`); compiles clean, universal Developer-ID-signed bundle; **coreaudiod
-    load + "appears in input pickers" not yet live-verified**. **P2b** — the shared-memory feed: a new
-    `SharedMemSink : AudinSampleSink` in macrdp writes the received PCM into an shm ring the plug-in reads in
-    `DoIOOperation` (replacing the tone) → delivers the client's real mic. **P2c** — int16→float32, resample
-    (client rate ↔ 44.1 kHz), a small jitter buffer, clock-drift handling (like `audio.rs`'s rubato).
-    **P3** — disconnect cleanup, silence/mute handling, install-from-app embedding.
+    + `packaging/install-audio-plugin.sh`); universal Developer-ID-signed bundle. **coreaudiod loads it, the
+    device appears as a clean INPUT-only 2ch/44100/Virtual device, and it delivers the exact tone** — captured
+    via ffmpeg/AVFoundation: 440 Hz (zero-crossings), −26.02 dBFS peak (= amplitude 0.05), pure sine (peak−RMS
+    = 3.01 dB). Fixed live: scope-aware `Streams` (was reporting phantom output channels).
+    **P2b — the shared-memory feed.** **P2b-0 ✅ DONE + VERIFIED** (2026-09-01) — proved a HAL plug-in inside
+    coreaudiod's sandbox (user `_coreaudiod`) can read POSIX shm (`/macrdp_mic_ring`, 0666) written by an
+    external different-user process (the one real P2b unknown). The plug-in drains the ring in `DoIOOperation`
+    (overrun→drop to half-ring, underrun→silence), 440 Hz fallback otherwise. Proof via audio: a 220 Hz test
+    writer → recorded 220 Hz @ −20 dB, not the fallback. **P2b-1 ✅ DONE + VERIFIED** (2026-09-01) — the real
+    `SharedMemSink : AudinSampleSink` (`src/audin/shm_sink.rs`, byte-for-byte mirror of
+    `audioplugin/macrdp_mic_ring.h`, PCM16 mono→Float32 stereo, release/acquire ordering; wired in
+    `build_processor`: MIC_DUMP→WAV, else macOS→feed, else None). Verified client-free: a layout test pins the
+    Rust struct to the C offsets, and feeding 330 Hz through the real sink recorded 330 Hz @ −20 dB off macrdp
+    Microphone. **NEXT: the full RDP chain live-verify** (real client mic → audin → SharedMemSink → plug-in →
+    app); Phase-0 already proved the mic reaches audin and both ring ends are proven, so this is low-risk.
+    **P2c** — resample (client rate ↔ 44.1 kHz; P2b assumes 44100), a small jitter buffer, clock-drift handling
+    (like `audio.rs`'s rubato), and switch the plug-in's no-feed output from the 440 Hz bring-up tone to SILENCE.
+    **P3** — disconnect cleanup, silence/mute handling, install-from-app embedding (ship macrdp-mic.driver in
+    macrdp.app/Contents/Resources like the ifd bundle).
   - **Module placement:** new `src/audio_input/` (`mod.rs` = the `AUDIO_INPUT` DVC backend + factory/policy,
     `feed.rs` = the shared-memory producer into the HAL plug-in), mirroring `src/camera/`. The plug-in bundle:
     `gui/Sources/macrdpmic` (an `AudioServerPlugIn` `.driver`) + a `packaging/make-audio-plugin.sh` +
