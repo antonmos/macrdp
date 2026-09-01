@@ -148,8 +148,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
     `audioplugin/macrdp_mic_ring.h`, PCM16 mono→Float32 stereo, release/acquire ordering; wired in
     `build_processor`: MIC_DUMP→WAV, else macOS→feed, else None). Verified client-free: a layout test pins the
     Rust struct to the C offsets, and feeding 330 Hz through the real sink recorded 330 Hz @ −20 dB off macrdp
-    Microphone. **NEXT: the full RDP chain live-verify** (real client mic → audin → SharedMemSink → plug-in →
-    app); Phase-0 already proved the mic reaches audin and both ring ends are proven, so this is low-risk.
+    Microphone. **✅ FULL RDP CHAIN LIVE-VERIFIED + EAR-VERIFIED** (2026-09-01) — a real Win11 client's mic
+    plays through macrdp Microphone as natural voice at normal pitch (user-confirmed via QuickTime). Fixed live:
+    the macOS ftruncate-once shm quirk (`3ba1599` — 2nd ftruncate on reuse → EINVAL → silent tone fallback).
     **P2c** — resample (client rate ↔ 44.1 kHz; P2b assumes 44100), a small jitter buffer, clock-drift handling
     (like `audio.rs`'s rubato), and switch the plug-in's no-feed output from the 440 Hz bring-up tone to SILENCE.
     **P3** — disconnect cleanup, silence/mute handling, install-from-app embedding (ship macrdp-mic.driver in
