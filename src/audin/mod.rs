@@ -14,7 +14,10 @@
 //! will then hand the processor a `Some(sink)` instead of `None`. See
 //! `TODO.md` ("Microphone / audio-input redirection").
 
-use ironrdp_server::{AudinServer, AudinServerFactory};
+use ironrdp_server::{AudinSampleSink, AudinServer, AudinServerFactory};
+
+mod wav_dump;
+use wav_dump::WavDumpSink;
 
 /// The macrdp MS-RDPEAI factory. Cross-platform — Phase 0 has no platform code (it
 /// only negotiates + logs). Phase 2's virtual-mic sink sits behind
@@ -35,8 +38,17 @@ impl Default for MacAudin {
 
 impl AudinServerFactory for MacAudin {
     fn build_processor(&self) -> AudinServer {
-        // Phase 0: no sink → the processor negotiates, logs the mic stream, and
-        // drops the audio (the go/no-go gate). Phase 2 passes `Some(sink)`.
-        AudinServer::new(None)
+        // Phase 1: with `MACRDP_MIC_DUMP=1`, capture the received PCM to a WAV
+        // under `$TMPDIR` so it can be played back to verify the decode (the
+        // audio analogue of `MACRDP_CAMERA_DUMP`). Off → `None` (Phase-0
+        // negotiate + log + drop). Phase 2 replaces this with the
+        // `AudioServerPlugIn` feed sink.
+        let sink: Option<Box<dyn AudinSampleSink>> =
+            if std::env::var_os("MACRDP_MIC_DUMP").is_some() {
+                Some(Box::new(WavDumpSink::new()))
+            } else {
+                None
+            };
+        AudinServer::new(sink)
     }
 }
