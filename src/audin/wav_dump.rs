@@ -17,23 +17,48 @@ use tracing::{info, warn};
 
 /// Writes the inbound mic PCM to a canonical 44-byte-header WAV. The two size
 /// fields (RIFF `ChunkSize` @ offset 4, `data` `Subchunk2Size` @ offset 40) are
-/// left `0` while streaming and patched from `data_bytes` on drop, so even an
-/// abrupt disconnect leaves a file most players accept (only the unwritten size
-/// header, not the audio, is affected).
+/// re-patched from `data_bytes` **periodically while streaming** (every
+/// [`FINALIZE_EVERY_PACKETS`]) and again on drop, so the file is playable at any
+/// point without waiting for the connection to tear down — the `Drop` alone
+/// wouldn't run until the whole `macrdp` process exits when the dump is taken via
+/// a foreground run.
 pub struct WavDumpSink {
     file: Option<File>,
     data_bytes: u32,
+    packets: u64,
     path: Option<PathBuf>,
 }
+
+/// Re-patch the WAV size headers every this many Data PDUs (~0.5 s at the
+/// ~100 pkt/s the client streams), then seek back to the end to keep appending.
+const FINALIZE_EVERY_PACKETS: u64 = 100;
 
 impl WavDumpSink {
     pub fn new() -> Self {
         Self {
             file: None,
             data_bytes: 0,
+            packets: 0,
             path: None,
         }
     }
+}
+
+/// Patch the RIFF `ChunkSize` (offset 4) and `data` `Subchunk2Size` (offset 40)
+/// from the running byte count, then seek back to the end so the next append
+/// continues writing PCM rather than overwriting the header. Best-effort: a
+/// failed seek/write just leaves the last-patched sizes in place.
+fn patch_wav_sizes(f: &mut File, data_bytes: u32) {
+    let riff_len = 36u32.saturating_add(data_bytes);
+    if f.seek(SeekFrom::Start(4)).is_ok() {
+        let _ = f.write_all(&riff_len.to_le_bytes());
+    }
+    if f.seek(SeekFrom::Start(40)).is_ok() {
+        let _ = f.write_all(&data_bytes.to_le_bytes());
+    }
+    // Restore the append position (end of the data written so far) so on_data's
+    // next write extends the PCM instead of clobbering the header.
+    let _ = f.seek(SeekFrom::End(0));
 }
 
 impl Default for WavDumpSink {
@@ -101,9 +126,18 @@ impl AudinSampleSink for WavDumpSink {
     }
 
     fn on_data(&mut self, data: &[u8]) {
-        if let Some(f) = self.file.as_mut() {
-            if f.write_all(data).is_ok() {
-                self.data_bytes = self.data_bytes.saturating_add(data.len() as u32);
+        let Some(f) = self.file.as_mut() else {
+            return;
+        };
+        if f.write_all(data).is_err() {
+            return;
+        }
+        self.data_bytes = self.data_bytes.saturating_add(data.len() as u32);
+        self.packets = self.packets.wrapping_add(1);
+        // Keep the size headers current so the dump plays back mid-stream.
+        if self.packets.is_multiple_of(FINALIZE_EVERY_PACKETS) {
+            if let Some(f) = self.file.as_mut() {
+                patch_wav_sizes(f, self.data_bytes);
             }
         }
     }
@@ -114,13 +148,7 @@ impl Drop for WavDumpSink {
         let Some(mut f) = self.file.take() else {
             return;
         };
-        let riff_len = 36u32.saturating_add(self.data_bytes);
-        if f.seek(SeekFrom::Start(4)).is_ok() {
-            let _ = f.write_all(&riff_len.to_le_bytes());
-        }
-        if f.seek(SeekFrom::Start(40)).is_ok() {
-            let _ = f.write_all(&self.data_bytes.to_le_bytes());
-        }
+        patch_wav_sizes(&mut f, self.data_bytes);
         let _ = f.flush();
         info!(
             bytes = self.data_bytes,
