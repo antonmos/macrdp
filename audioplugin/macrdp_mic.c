@@ -56,6 +56,20 @@
 #define kManufacturer  "macrdp"
 #define kBoxModelUID   "macrdpMicrophone_Model"
 
+// When there's no macrdp feed, output SILENCE — a real installed mic must be
+// quiet with no client connected. Set to 1 to restore the 440 Hz bring-up tone
+// for diagnosing the feed path (feed-vs-fallback tell).
+#define MACRDP_MIC_FALLBACK_TONE 0
+
+// Bound mic latency. The reader maps the ring mid-stream with the writer already
+// ahead, so without a cap it would sit ~0.75 s behind. On a large backlog
+// (startup, or after a stall) skip ahead to keep only ~kTargetLatencyFrames of
+// the freshest audio; only fires past kMaxLatencyFrames so ordinary network
+// jitter doesn't cause over-dropping. ~100 ms target / ~250 ms trigger at 44.1 kHz
+// — responsive versus the old ~0.75 s, with headroom for RDP network jitter.
+#define kTargetLatencyFrames 4410u
+#define kMaxLatencyFrames    11025u
+
 // COM HRESULTs (not defined on macOS outside the Windows headers).
 #ifndef S_OK
 #define S_OK          ((HRESULT)0x00000000L)
@@ -780,11 +794,15 @@ static OSStatus MacRDPMic_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
         uint64_t r = atomic_load_explicit(&ring->read_frames, memory_order_relaxed);
         uint64_t avail = (w > r) ? (w - r) : 0;
 
-        // Overrun: the writer lapped us (drift / a stall). Drop stale audio and
-        // keep only ~half a ring of the freshest, so latency stays bounded.
-        if (avail > cap) {
-            r = w - (cap / 2);
-            avail = cap / 2;
+        // Bound latency: on a large backlog (startup — the reader maps mid-stream
+        // with the writer already ahead — or after a stall/drift) skip ahead to
+        // keep only ~kTargetLatencyFrames of the freshest audio, so the mic stays
+        // responsive. Clamp the target to the ring so a tiny ring can't underflow.
+        uint64_t maxLatency = (kMaxLatencyFrames < cap) ? (uint64_t)kMaxLatencyFrames : (uint64_t)cap;
+        uint64_t targetLatency = (kTargetLatencyFrames < cap) ? (uint64_t)kTargetLatencyFrames : (uint64_t)(cap / 2);
+        if (avail > maxLatency) {
+            r = w - targetLatency;
+            avail = targetLatency;
         }
         uint32_t toRead = (avail < (uint64_t)inIOBufferFrameSize) ? (uint32_t)avail : inIOBufferFrameSize;
 
@@ -806,9 +824,10 @@ static OSStatus MacRDPMic_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
         return noErr;
     }
 
-    // Fallback: a gentle 440 Hz tone, keyed to the requested sample time so it's
-    // phase-continuous. (P2b-0 bring-up: the feed writer uses a different
-    // frequency, so the recorded pitch tells feed-vs-fallback apart.)
+    // No feed mapped/valid.
+#if MACRDP_MIC_FALLBACK_TONE
+    // Diagnostic 440 Hz tone (feed-vs-fallback tell during bring-up), phase-
+    // continuous via the requested sample time.
     Float64 startFrame = inIOCycleInfo->mInputTime.mSampleTime;
     const Float64 twoPiFOverFs = 2.0 * M_PI * 440.0 / kSampleRate;
     for (UInt32 i = 0; i < inIOBufferFrameSize; i++) {
@@ -817,6 +836,11 @@ static OSStatus MacRDPMic_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
             out[i * kChannelsPerFrame + c] = s;
         }
     }
+#else
+    // Silence — a real installed mic is quiet when no client is connected.
+    (void)inIOCycleInfo;
+    memset(out, 0, (size_t)inIOBufferFrameSize * kChannelsPerFrame * sizeof(Float32));
+#endif
     return noErr;
 }
 
