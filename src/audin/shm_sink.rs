@@ -85,8 +85,29 @@ impl SharedMemSink {
             // Force 0666 past the umask so coreaudiod (a different user) can open it.
             libc::fchmod(fd, 0o666);
             let size = std::mem::size_of::<MicRing>();
-            if libc::ftruncate(fd, size as libc::off_t) != 0 {
-                warn!(errno = errno(), "mic feed: ftruncate failed");
+            // macOS permits ftruncate on a POSIX shm object only ONCE — when it
+            // first sizes a freshly-created (0-length) segment. A second
+            // ftruncate, even to the same size (the reconnect / reuse path),
+            // fails with EINVAL. So size it only when new; reuse an
+            // already-sized segment as-is.
+            let mut st: libc::stat = std::mem::zeroed();
+            if libc::fstat(fd, &mut st) != 0 {
+                warn!(errno = errno(), "mic feed: fstat failed");
+                libc::close(fd);
+                return None;
+            }
+            if st.st_size == 0 {
+                if libc::ftruncate(fd, size as libc::off_t) != 0 {
+                    warn!(errno = errno(), "mic feed: ftruncate failed");
+                    libc::close(fd);
+                    return None;
+                }
+            } else if (st.st_size as usize) < size {
+                warn!(
+                    existing = st.st_size,
+                    needed = size,
+                    "mic feed: existing ring smaller than expected — cannot resize a live shm"
+                );
                 libc::close(fd);
                 return None;
             }
