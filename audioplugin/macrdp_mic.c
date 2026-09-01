@@ -420,9 +420,14 @@ static OSStatus property_size(AudioObjectID inObjectID, const AudioObjectPropert
                 case kAudioDevicePropertyModelUID:
                     *outSize = sizeof(CFStringRef); return noErr;
                 case kAudioObjectPropertyOwnedObjects:
-                case kAudioDevicePropertyStreams:
                 case kAudioDevicePropertyRelatedDevices:
                     *outSize = sizeof(AudioObjectID); return noErr; // one stream / self
+                case kAudioDevicePropertyStreams:
+                    // Scope-sensitive: this is an INPUT-only device, so the
+                    // output scope has no streams (else it reports phantom
+                    // output channels and apps may try to play into it).
+                    *outSize = (a->mScope == kAudioObjectPropertyScopeOutput) ? 0 : sizeof(AudioObjectID);
+                    return noErr;
                 case kAudioObjectPropertyControlList:
                     *outSize = 0; return noErr; // no controls in P2a
                 case kAudioDevicePropertyNominalSampleRate:
@@ -545,8 +550,16 @@ static OSStatus MacRDPMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, A
                 case kAudioDevicePropertyZeroTimeStampPeriod:
                     *(UInt32*)outData = kRingFrames; break;
                 case kAudioObjectPropertyOwnedObjects:
-                case kAudioDevicePropertyStreams:
                     *(AudioObjectID*)outData = kObjectID_Stream_Input; need = sizeof(AudioObjectID); break;
+                case kAudioDevicePropertyStreams:
+                    // Output scope: no streams (input-only device). Input/Global: the one input stream.
+                    if (inAddress->mScope == kAudioObjectPropertyScopeOutput) {
+                        need = 0;
+                    } else {
+                        *(AudioObjectID*)outData = kObjectID_Stream_Input;
+                        need = sizeof(AudioObjectID);
+                    }
+                    break;
                 case kAudioDevicePropertyRelatedDevices:
                     *(AudioObjectID*)outData = kObjectID_Device; need = sizeof(AudioObjectID); break;
                 case kAudioObjectPropertyControlList:
