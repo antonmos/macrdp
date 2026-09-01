@@ -768,7 +768,12 @@ static OSStatus MacRDPMic_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
     // input buffer (single-consumer). Otherwise fall back to the P2a test tone,
     // so the device is never silent-with-no-explanation during bring-up.
     MacrdpMicRing* ring = gRing;
-    if (ring != NULL && ring->magic == MACRDP_MIC_MAGIC && ring->ring_frames != 0) {
+    // Acquire-load the magic so the header the writer published before it (rate,
+    // channels, ring_frames) is visible — release/acquire pair with the writer.
+    uint32_t magic = (ring != NULL)
+        ? atomic_load_explicit((_Atomic uint32_t*)&ring->magic, memory_order_acquire)
+        : 0u;
+    if (ring != NULL && magic == MACRDP_MIC_MAGIC && ring->ring_frames != 0) {
         const uint32_t cap = ring->ring_frames;       // power of two
         const uint32_t rch = ring->channels;
         uint64_t w = atomic_load_explicit(&ring->write_frames, memory_order_acquire);

@@ -19,6 +19,9 @@ use ironrdp_server::{AudinSampleSink, AudinServer, AudinServerFactory};
 mod wav_dump;
 use wav_dump::WavDumpSink;
 
+#[cfg(target_os = "macos")]
+mod shm_sink;
+
 /// The macrdp MS-RDPEAI factory. Cross-platform — Phase 0 has no platform code (it
 /// only negotiates + logs). Phase 2's virtual-mic sink sits behind
 /// `AudinSampleSink`, built here.
@@ -38,16 +41,27 @@ impl Default for MacAudin {
 
 impl AudinServerFactory for MacAudin {
     fn build_processor(&self) -> AudinServer {
-        // Phase 1: with `MACRDP_MIC_DUMP=1`, capture the received PCM to a WAV
-        // under `$TMPDIR` so it can be played back to verify the decode (the
-        // audio analogue of `MACRDP_CAMERA_DUMP`). Off → `None` (Phase-0
-        // negotiate + log + drop). Phase 2 replaces this with the
-        // `AudioServerPlugIn` feed sink.
+        // Sink selection:
+        //  * `MACRDP_MIC_DUMP=1` → WAV dump under `$TMPDIR` (Phase-1 debug: play
+        //    it back to verify the decode; the audio analogue of
+        //    `MACRDP_CAMERA_DUMP`). Overrides the feed.
+        //  * otherwise (macOS) → the Phase-2 `SharedMemSink` feed into the
+        //    "macrdp Microphone" HAL plug-in's shared ring. If the ring can't be
+        //    mapped, fall back to `None` (negotiate + drop) so a mic setup
+        //    problem never kills the session.
+        //  * non-macOS → `None` (there is no virtual mic to feed).
         let sink: Option<Box<dyn AudinSampleSink>> =
             if std::env::var_os("MACRDP_MIC_DUMP").is_some() {
                 Some(Box::new(WavDumpSink::new()))
             } else {
-                None
+                #[cfg(target_os = "macos")]
+                {
+                    shm_sink::SharedMemSink::new().map(|s| Box::new(s) as Box<dyn AudinSampleSink>)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    None
+                }
             };
         AudinServer::new(sink)
     }
