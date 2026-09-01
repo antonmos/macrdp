@@ -28,6 +28,14 @@
 #include <pthread.h>
 #include <string.h>
 #include <math.h>
+#include <stdatomic.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#include "macrdp_mic_ring.h"
 
 // ---------------------------------------------------------------------------
 // Device shape. One interleaved Float32 input stream. Stereo for the broadest
@@ -83,9 +91,59 @@ static UInt64 gAnchorHostTime = 0;
 static Float64 gHostTicksPerFrame = 0.0;
 static UInt64 gClockSeed = 1;
 
+// Shared-memory feed from macrdp (P2b). Mapped at StartIO (off the real-time IO
+// thread), read in DoIOOperation. NULL until macrdp is running and streaming a
+// mic — DoIOOperation then falls back to the internal test tone.
+static MacrdpMicRing* gRing = NULL;
+static int gRingFd = -1;
+
 static void ensure_log(void) {
     if (gLog == NULL) {
         gLog = os_log_create("com.clintcan.macrdp.mic", "plugin");
+    }
+}
+
+// Map the macrdp mic ring if it exists (the writer creates + sizes + initializes
+// it). Reader-only: never creates the segment, never resizes it — so a device
+// opened before macrdp is running simply finds nothing and plays the tone. Runs
+// on StartIO, i.e. NOT the real-time IO thread, so the blocking syscalls are ok.
+static void ring_map(void) {
+    if (gRing != NULL) {
+        return;
+    }
+    int fd = shm_open(MACRDP_MIC_SHM_NAME, O_RDWR, 0666);
+    if (fd < 0) {
+        os_log(gLog, "macrdp-mic: no feed ring (%{public}s: %d) — using test tone",
+               MACRDP_MIC_SHM_NAME, errno);
+        return;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || (size_t)st.st_size < sizeof(MacrdpMicRing)) {
+        os_log(gLog, "macrdp-mic: feed ring too small (%lld < %zu) — test tone",
+               (long long)st.st_size, sizeof(MacrdpMicRing));
+        close(fd);
+        return;
+    }
+    void* p = mmap(NULL, sizeof(MacrdpMicRing), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+        os_log(gLog, "macrdp-mic: feed ring mmap failed (%d) — test tone", errno);
+        close(fd);
+        return;
+    }
+    gRingFd = fd;
+    gRing = (MacrdpMicRing*)p;
+    os_log(gLog, "macrdp-mic: feed ring mapped (magic=0x%x rate=%u ch=%u) — reading mic feed",
+           gRing->magic, gRing->sample_rate, gRing->channels);
+}
+
+static void ring_unmap(void) {
+    if (gRing != NULL) {
+        munmap((void*)gRing, sizeof(MacrdpMicRing));
+        gRing = NULL;
+    }
+    if (gRingFd >= 0) {
+        close(gRingFd);
+        gRingFd = -1;
     }
 }
 
@@ -636,7 +694,11 @@ static OSStatus MacRDPMic_StartIO(AudioServerPlugInDriverRef inDriver, AudioObje
         gAnchorHostTime = mach_absolute_time();
         gClockSeed++;
         gDeviceRunning = true;
-        os_log(gLog, "macrdp-mic: StartIO (first client) — clock anchored");
+        // Map the macrdp feed ring now (off the real-time IO thread). If macrdp
+        // isn't streaming, this no-ops and DoIOOperation plays the test tone.
+        ring_map();
+        os_log(gLog, "macrdp-mic: StartIO (first client) — clock anchored, feed %{public}s",
+               gRing != NULL ? "mapped" : "absent (test tone)");
     }
     gIOClientsRunning++;
     pthread_mutex_unlock(&gStateMutex);
@@ -654,6 +716,7 @@ static OSStatus MacRDPMic_StopIO(AudioServerPlugInDriverRef inDriver, AudioObjec
     }
     if (gIOClientsRunning == 0) {
         gDeviceRunning = false;
+        ring_unmap();
         os_log(gLog, "macrdp-mic: StopIO (last client) — device idle");
     }
     pthread_mutex_unlock(&gStateMutex);
@@ -699,10 +762,48 @@ static OSStatus MacRDPMic_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
         return noErr;
     }
 
-    // P2a: synthesize a gentle 440 Hz tone into the input buffer, keyed to the
-    // requested sample time so it's phase-continuous. P2b replaces this with a
-    // read from the shared-memory ring macrdp fills from the RDP mic stream.
     Float32* out = (Float32*)ioMainBuffer;
+
+    // P2b: if macrdp's feed ring is mapped and initialized, drain it into the
+    // input buffer (single-consumer). Otherwise fall back to the P2a test tone,
+    // so the device is never silent-with-no-explanation during bring-up.
+    MacrdpMicRing* ring = gRing;
+    if (ring != NULL && ring->magic == MACRDP_MIC_MAGIC && ring->ring_frames != 0) {
+        const uint32_t cap = ring->ring_frames;       // power of two
+        const uint32_t rch = ring->channels;
+        uint64_t w = atomic_load_explicit(&ring->write_frames, memory_order_acquire);
+        uint64_t r = atomic_load_explicit(&ring->read_frames, memory_order_relaxed);
+        uint64_t avail = (w > r) ? (w - r) : 0;
+
+        // Overrun: the writer lapped us (drift / a stall). Drop stale audio and
+        // keep only ~half a ring of the freshest, so latency stays bounded.
+        if (avail > cap) {
+            r = w - (cap / 2);
+            avail = cap / 2;
+        }
+        uint32_t toRead = (avail < (uint64_t)inIOBufferFrameSize) ? (uint32_t)avail : inIOBufferFrameSize;
+
+        for (uint32_t i = 0; i < toRead; i++) {
+            uint64_t idx = (r + i) & (uint64_t)(cap - 1);
+            const float* src = &ring->samples[idx * rch];
+            for (uint32_t c = 0; c < kChannelsPerFrame; c++) {
+                // Map device channel c from the ring (mono ring → duplicate ch 0).
+                out[i * kChannelsPerFrame + c] = (c < rch) ? src[c] : src[0];
+            }
+        }
+        // Underrun: silence the frames the writer hasn't produced yet.
+        for (uint32_t i = toRead; i < inIOBufferFrameSize; i++) {
+            for (uint32_t c = 0; c < kChannelsPerFrame; c++) {
+                out[i * kChannelsPerFrame + c] = 0.0f;
+            }
+        }
+        atomic_store_explicit(&ring->read_frames, r + toRead, memory_order_release);
+        return noErr;
+    }
+
+    // Fallback: a gentle 440 Hz tone, keyed to the requested sample time so it's
+    // phase-continuous. (P2b-0 bring-up: the feed writer uses a different
+    // frequency, so the recorded pitch tells feed-vs-fallback apart.)
     Float64 startFrame = inIOCycleInfo->mInputTime.mSampleTime;
     const Float64 twoPiFOverFs = 2.0 * M_PI * 440.0 / kSampleRate;
     for (UInt32 i = 0; i < inIOBufferFrameSize; i++) {
