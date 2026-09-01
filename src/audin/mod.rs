@@ -50,19 +50,35 @@ impl AudinServerFactory for MacAudin {
         //    mapped, fall back to `None` (negotiate + drop) so a mic setup
         //    problem never kills the session.
         //  * non-macOS → `None` (there is no virtual mic to feed).
-        let sink: Option<Box<dyn AudinSampleSink>> =
-            if std::env::var_os("MACRDP_MIC_DUMP").is_some() {
-                Some(Box::new(WavDumpSink::new()))
-            } else {
-                #[cfg(target_os = "macos")]
-                {
-                    shm_sink::SharedMemSink::new().map(|s| Box::new(s) as Box<dyn AudinSampleSink>)
+        let sink: Option<Box<dyn AudinSampleSink>> = if std::env::var_os("MACRDP_MIC_DUMP")
+            .is_some()
+        {
+            tracing::info!(
+                "mic: MACRDP_MIC_DUMP set — dumping received PCM to WAV, NOT feeding the virtual mic"
+            );
+            Some(Box::new(WavDumpSink::new()))
+        } else {
+            #[cfg(target_os = "macos")]
+            {
+                match shm_sink::SharedMemSink::new() {
+                    Some(s) => {
+                        tracing::info!("mic: feeding the macrdp Microphone shared ring");
+                        Some(Box::new(s) as Box<dyn AudinSampleSink>)
+                    }
+                    None => {
+                        tracing::warn!(
+                            "mic: could not map the shared ring — audio dropped (is the macrdp \
+                             Microphone plug-in installed? mic still negotiates)"
+                        );
+                        None
+                    }
                 }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    None
-                }
-            };
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        };
         AudinServer::new(sink)
     }
 }
