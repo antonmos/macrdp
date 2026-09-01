@@ -17,9 +17,9 @@ FreeRDP's source. The brief was explicitly to *disprove* the claims, not confirm
 
 **Re-verified 2026-09-30** by direct source checks: FreeRDP `master` (as of 2026-09-29),
 **upstream IronRDP `master`** — which since July has grown UDP, USB and camera crates of its
-own, so it now gets a dated section, [§6](#6-upstream-ironrdp--a-dated-timeline) —
+own, so it now gets a dated section, [§7](#7-upstream-ironrdp--a-dated-timeline) —
 lamco-rdp-server, x6nux/macrdp and CGKPK/RDPonMAC. All three firsts still stand. The UDP
-one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §6).
+one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §7).
 
 > **House rule: always write "as far as is known" / "first known" — never a bare "first"
 > or "only".** These are negative-existence claims over a field that was not exhaustively
@@ -35,9 +35,10 @@ one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §6)
 | Capability (server direction) | Verdict | Confidence |
 |---|---|---|
 | **USB redirection** — present a client's USB device as a real local device (MS-RDPEUSB/URBDRC) | **First known** (2026-07-06) — **no longer the only one**: qemu-display's `qemu-rdp` followed on 2026-08-24, presenting to a QEMU guest (see §1) | High |
-| **UDP multitransport** — actually carry channel data over UDP (MS-RDPEMT/RDPEUDP) | **First known** — upstream IronRDP's equivalent is an **open PR** (#1954), see §6 | High today; **re-check when #1954 merges** |
+| **UDP multitransport** — actually carry channel data over UDP (MS-RDPEMT/RDPEUDP) | **First known** — upstream IronRDP's equivalent is an **open PR** (#1954), see §7 | High today; **re-check when #1954 merges** |
 | **Camera redirection** — client webcam → **a real OS camera device**, end to end (MS-RDPECAM) | **First known** *(state it precisely — see below)* | High after source read |
 | "First/only **native macOS** RDP server" | **❌ REFUTED — do not claim** | High |
+| **Microphone redirection** — present a client mic as a real OS *input* device (MS-RDPEAI) | **❌ Not a first — do not claim** (xrdp does it) | High after source read |
 | **H.264/EGFX** server-side encoding | **Not a first** — don't claim | High |
 | Smart-card (MS-RDPESC) server direction; drive-as-a-real-mount | **Unadjudicated** — assert nothing | — |
 
@@ -122,7 +123,7 @@ over an MS-RDPEMT tunnel on MS-RDPEUDP — not a TCP-side bootstrap stub.
 2026-09-30). The RDPEUDP / RDPEUDP2 work (David Fort) stayed **out of tree**.
 
 **Upstream IronRDP is catching up, and is the one to watch.** It gained an RDP-UDP
-transport for its **client** in August–September 2026 (see §6), and server-side
+transport for its **client** in August–September 2026 (see §7), and server-side
 *bootstrapping* on **2026-09-28** — but the piece that actually moves channel data (EGFX)
 onto the server's UDP tunnel is
 [**#1954**](https://github.com/Devolutions/IronRDP/pull/1954), opened 2026-09-10 and
@@ -192,7 +193,52 @@ code since). x6nux does have audio and clipboard; RDPonMAC has only stubs for bo
 
 → Both projects are compared properly in **[Part 2](#part-2--project-comparisons)**.
 
-## 5. What macrdp should NOT claim
+## 5. Microphone / audio-input redirection (MS-RDPEAI) — NOT a first
+
+**Do not claim macrdp is the first OSS RDP server to redirect the client's microphone — xrdp
+already does it, end to end.** Added + verified by direct source read **2026-09-01** (prompted
+by macrdp's own MS-RDPEAI feature landing; the mistake would have been easy to make since USB /
+UDP / camera above *are* firsts).
+
+**Evidence.** xrdp implements server-direction MS-RDPEAI and presents the client's mic as a
+**real recordable OS input device** — a PulseAudio **source** (which is exactly the meaningful
+bar, the same one macrdp meets on macOS with a Core Audio input device):
+
+- `neutrinolabs/pulseaudio-module-xrdp` builds **`module-xrdp-source.so`** (audio input),
+  alongside `module-xrdp-sink.so` (output). A PulseAudio *source* is a recordable input device,
+  so ordinary server-side apps record the client's mic through it.
+- `xrdp/sesman/chansrv/sound.c` is a real (non-stub) implementation: `sound_start_source_listener()`
+  opens a Unix-domain socket for mic data; `sound_sndsrvr_source_data_in()` handles
+  `PA_CMD_START_REC` / `PA_CMD_SEND_DATA` / `PA_CMD_STOP_REC`; it `#include "audin.h"` and calls
+  `audin_start()` / `audin_stop()` (the MS-RDPEAI channel), FIFO-buffered.
+- Flow: client mic → chansrv (audin / MS-RDPEAI) → `module-xrdp-source.so` → recordable by
+  Linux apps on the server. The xrdp wiki states the client→server path is "implemented as per
+  [MS-RDPEAI] … interoperable with any RDP client."
+
+**Upstream IronRDP has it too, server side, since September 2026.** The `ironrdp-rdpeai`
+protocol crate landed on 2026-08-12 ([#1645](https://github.com/Devolutions/IronRDP/pull/1645))
+and its `ironrdp-server` integration on 2026-09-22
+([#1946](https://github.com/Devolutions/IronRDP/pull/1946)) — a protocol endpoint (the
+application supplies the audio sink), not a device. macrdp plans to adopt it in place of its own
+vendored copy at the next IronRDP version bump.
+
+**FreeRDP is not the relevant precedent either way:** its `audin` is *client-side* capture (the
+`/microphone` flag), and FreeRDP has no device-presenting server, so it neither refutes nor
+supports a first claim. xrdp alone settles it.
+
+**The only defensible framing is platform-specific, with the house-rule hedge:** "as far as is
+known, the first to present a client-redirected mic as a native **macOS Core Audio** input
+device" (via a from-scratch `AudioServerPlugIn`), pairing with camera redirection for a full
+remote webcam **+ mic**. Even that is **unverified** — prior native macOS OSS RDP servers exist
+(x6nux, CGKPK; see §4), though both are display+input only and almost certainly don't do mic —
+so state the macOS angle only with "as far as is known", and **never** a bare "first OSS RDP
+server to do mic redirection".
+
+Sources: [`pulseaudio-module-xrdp`](https://github.com/neutrinolabs/pulseaudio-module-xrdp),
+[`xrdp/sesman/chansrv/sound.c`](https://github.com/neutrinolabs/xrdp/blob/devel/sesman/chansrv/sound.c),
+[xrdp audio wiki](https://github.com/neutrinolabs/xrdp/wiki/Audio-Output-Virtual-Channel-support-in-xrdp).
+
+## 6. What macrdp should NOT claim
 
 - **H.264/EGFX server-side encoding is not a first** — xrdp and gnome-remote-desktop both do
   server-side H.264.
@@ -202,7 +248,7 @@ code since). x6nux does have audio and clipboard; RDPonMAC has only stubs for bo
 - [Lamco's comparison page](https://lamco.ai/comparison/) is marketing-quality; the
   verification panel rejected claims resting on it. Don't cite it in either direction.
 
-## 6. Upstream IronRDP — a dated timeline
+## 7. Upstream IronRDP — a dated timeline
 
 Upstream IronRDP is the project most likely to overtake these claims: macrdp is built on
 it, and since July it has grown UDP, USB and camera crates of its own. Dates are merge dates
@@ -242,7 +288,7 @@ How to read it:
 The honest boundary on claims 1–3: the survey did **not** affirmatively clear **ogon**,
 **gnome-remote-desktop**, the **Weston/wlroots** RDP backends, **NeutrinoRDP**, or the
 IronRDP-downstream servers hypr, cosmic-ext and ARISU for server-direction USB, camera, or
-UDP. The claims rest on FreeRDP + xrdp absence-of-evidence plus the IronRDP timeline in §6 —
+UDP. The claims rest on FreeRDP + xrdp absence-of-evidence plus the IronRDP timeline in §7 —
 strong for those projects, but not an exhaustive field survey. Hence "as far as is known".
 
 **Cleared or found since July (2026-09-30):**
@@ -276,6 +322,10 @@ These are absence claims about actively developed upstreams. To re-check:
    server-direction redirection channel? Search GitHub code for implementations of
    `UsbRedirDevice` and callers of `accept_finalize_with_multitransport` (IronRDP's server-side
    extension points for USB and UDP).
+6. **Microphone (a NON-first)** — does `neutrinolabs/pulseaudio-module-xrdp` still build
+   `module-xrdp-source.so`, and does `xrdp/sesman/chansrv/sound.c` still implement
+   `sound_start_source_listener()` + `audin_start()`? (This is the evidence that mic
+   redirection is *not* a macrdp first — it should stay true.)
 
 **Part 2 rots faster than Part 1** and on a different trigger: Part 1 tracks *absences* in
 upstreams that change slowly, while Part 2 tracks two actively-developed projects. Re-check
