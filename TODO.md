@@ -127,12 +127,20 @@ then delete; promote a parked item to *In flight* when work actually starts.
     macrdp feeds received PCM into the plug-in via a **shared-memory ring** (the audio analogue of the CMIO
     sink stream), with **clock/drift handling** — the client mic clock vs the Mac audio clock will drift, so
     resample like `audio.rs` already does 48→44.1 (`rubato`), plus a small jitter buffer (RDPEAI over TCP).
-  - **Phasing (mirror the camera feature):** **P0** — the `AUDIO_INPUT` handshake behind the flag, inert:
-    negotiate + log the client streaming its mic, drop the audio (proves mstsc/FreeRDP will hand macrdp a mic;
-    the camera Phase-0 gate is the template). **P1** — accept the Data PDUs, produce a PCM stream, dump to
-    WAV under `MACRDP_MIC_DUMP=1` (like `MACRDP_CAMERA_DUMP`) to verify content. **P2** — the `AudioServerPlugIn`
-    virtual mic + the shared-memory feed → present "macrdp Microphone". **P3** — format/clock robustness,
-    disconnect cleanup, silence/mute handling.
+  - **Phasing (mirror the camera feature):** **P0 ✅ DONE + LIVE-VERIFIED GREEN** (2026-09-01) — the
+    `AUDIO_INPUT` handshake behind the flag, inert: negotiate + log the client streaming its mic, drop the
+    audio (proved a real Win11 mstsc hands macrdp a continuous PCM mic stream over a server-direction DVC).
+    **P1 ✅ DONE + LIVE-VERIFIED** (2026-09-01) — `MACRDP_MIC_DUMP=1` writes the received PCM to a WAV under
+    `$TMPDIR` (`src/audin/wav_dump.rs`, behind the `AudinSampleSink` seam); verified real 17 s mono 44.1 kHz
+    voice (peak 100 % / RMS 2803 / 72 % active). **P2 — the `AudioServerPlugIn` virtual mic** (route A, C, no
+    entitlement), sub-phased: **P2a ✅ BUILT** (2026-09-01) — the HAL plug-in skeleton presenting "macrdp
+    Microphone" with an internal 440 Hz test tone (`audioplugin/macrdp_mic.c` + `packaging/make-audio-plugin.sh`
+    + `packaging/install-audio-plugin.sh`); compiles clean, universal Developer-ID-signed bundle; **coreaudiod
+    load + "appears in input pickers" not yet live-verified**. **P2b** — the shared-memory feed: a new
+    `SharedMemSink : AudinSampleSink` in macrdp writes the received PCM into an shm ring the plug-in reads in
+    `DoIOOperation` (replacing the tone) → delivers the client's real mic. **P2c** — int16→float32, resample
+    (client rate ↔ 44.1 kHz), a small jitter buffer, clock-drift handling (like `audio.rs`'s rubato).
+    **P3** — disconnect cleanup, silence/mute handling, install-from-app embedding.
   - **Module placement:** new `src/audio_input/` (`mod.rs` = the `AUDIO_INPUT` DVC backend + factory/policy,
     `feed.rs` = the shared-memory producer into the HAL plug-in), mirroring `src/camera/`. The plug-in bundle:
     `gui/Sources/macrdpmic` (an `AudioServerPlugIn` `.driver`) + a `packaging/make-audio-plugin.sh` +

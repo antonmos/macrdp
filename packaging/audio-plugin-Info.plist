@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Info.plist for the "macrdp Microphone" CoreAudio AudioServerPlugIn (.driver).
+     __BUILD__ is replaced with a monotonic build number by
+     packaging/make-audio-plugin.sh (coreaudiod, like sysextd, will not reload a
+     plug-in whose CFBundleVersion hasn't increased).
+
+     The two UUIDs are load-bearing:
+       * 443ABAB8-E7B3-491A-B985-BEB9187030DB is kAudioServerPlugInTypeUUID (the
+         AudioServerPlugIn plug-in TYPE) — coreaudiod looks up this type.
+       * E1A2B3C4-D5E6-47F8-9A0B-1C2D3E4F5A6B is OUR factory UUID; it maps to the
+         MacRDPMic_Create entry point in CFPlugInFactories. The factory function
+         name here must match the exported symbol in macrdp_mic.c. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>macrdp-mic</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.clintcan.macrdp.mic</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>macrdp Microphone</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>__BUILD__</string>
+    <key>CFPlugInFactories</key>
+    <dict>
+        <key>E1A2B3C4-D5E6-47F8-9A0B-1C2D3E4F5A6B</key>
+        <string>MacRDPMic_Create</string>
+    </dict>
+    <key>CFPlugInTypes</key>
+    <dict>
+        <key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+        <array>
+            <string>E1A2B3C4-D5E6-47F8-9A0B-1C2D3E4F5A6B</string>
+        </array>
+    </dict>
+</dict>
+</plist>
