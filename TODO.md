@@ -151,8 +151,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
     Microphone. **✅ FULL RDP CHAIN LIVE-VERIFIED + EAR-VERIFIED** (2026-09-01) — a real Win11 client's mic
     plays through macrdp Microphone as natural voice at normal pitch (user-confirmed via QuickTime). Fixed live:
     the macOS ftruncate-once shm quirk (`3ba1599` — 2nd ftruncate on reuse → EINVAL → silent tone fallback).
-    **P2c** — resample (client rate ↔ 44.1 kHz; P2b assumes 44100), a small jitter buffer, clock-drift handling
-    (like `audio.rs`'s rubato), and switch the plug-in's no-feed output from the 440 Hz bring-up tone to SILENCE.
+    **P2c ✅ DONE + VERIFIED** (2026-09-01) — plug-in no-feed output → SILENCE (verified idle = digital zeros,
+    tone behind compile-time `MACRDP_MIC_FALLBACK_TONE`), and a latency bound (~0.75 s → ~100 ms, jitter-safe);
+    live-verified no dropouts. Resample / drift deferred (mstsc uses 44100, none observed).
     **P3** — disconnect cleanup, silence/mute handling, install-from-app embedding (ship macrdp-mic.driver in
     macrdp.app/Contents/Resources like the ifd bundle).
   - **Module placement:** new `src/audio_input/` (`mod.rs` = the `AUDIO_INPUT` DVC backend + factory/policy,
