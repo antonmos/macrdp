@@ -1025,15 +1025,41 @@ mod macos {
         /// via `post_flags_changed` (the user is still physically holding Ctrl, so
         /// `self.mods` already reflects it). Shift/Caps in `self.mods` carry
         /// through unchanged, so `Ctrl+Shift+Z` → `Cmd+Shift+Z` (redo) works.
-        fn post_ctrl_as_cmd(&self, vk: u16, down: bool) {
-            // Swap Control→Command in both the public CGEventFlag bits and the
-            // device-dependent NX bits, leaving every other modifier intact.
+        /// Swap Control→Command in both the public CGEventFlag bits and the
+        /// device-dependent NX bits, leaving every other modifier intact.
+        /// Shared by the keyboard remap (`post_ctrl_as_cmd`) and the mouse
+        /// remap (`mouse_event_flags`).
+        fn ctrl_to_cmd_flags(&self) -> CGEventFlags {
             let mut bits = self.mods.cg_flags().bits();
             bits &= !CGEventFlags::CGEventFlagControl.bits();
             bits &= !(NX_DEVICE_L_CTRL | NX_DEVICE_R_CTRL);
             bits |= CGEventFlags::CGEventFlagCommand.bits();
             bits |= NX_DEVICE_L_CMD;
-            let swapped = CGEventFlags::from_bits_retain(bits);
+            CGEventFlags::from_bits_retain(bits)
+        }
+
+        /// Modifier flags to stamp on a mouse event. Normally the live
+        /// held-modifier state; but with `--map-ctrl-to-cmd` on, a plain Ctrl
+        /// (no Cmd/Alt) held over a non-excluded app is swapped to Command so a
+        /// Windows-style Ctrl+click behaves like a macOS Cmd+click (open a link
+        /// in a new tab) instead of a secondary/context click — the mouse
+        /// analogue of the keyboard Ctrl→Cmd remap. The expensive frontmost
+        /// check only runs once the cheap Ctrl-held guards pass, so an ordinary
+        /// unmodified drag never pays for it.
+        fn mouse_event_flags(&self) -> CGEventFlags {
+            if super::MAP_CTRL_TO_CMD.load(std::sync::atomic::Ordering::Relaxed)
+                && self.mods.has_ctrl()
+                && !self.mods.has_cmd()
+                && !self.mods.has_alt()
+                && !frontmost_is_excluded()
+            {
+                return self.ctrl_to_cmd_flags();
+            }
+            self.mods.cg_flags()
+        }
+
+        fn post_ctrl_as_cmd(&self, vk: u16, down: bool) {
+            let swapped = self.ctrl_to_cmd_flags();
 
             if down {
                 for source in [&self.source, &self.source_hid] {
@@ -1298,6 +1324,13 @@ mod macos {
             else {
                 return;
             };
+            // Carry the held-modifier state onto the move/drag, just as the
+            // keyboard path does — so a Cmd/Shift/Alt+drag reads correctly
+            // (e.g. Shift-drag to extend a selection). Without this the event
+            // is delivered with empty modifierFlags regardless of what's held.
+            // Applies the same Ctrl→Cmd swap as the click when --map-ctrl-to-cmd
+            // is on, so a Ctrl+drag stays coherent with its Ctrl+click down.
+            ev.set_flags(self.mouse_event_flags());
             ev.post(CGEventTapLocation::HID);
         }
 
@@ -1358,6 +1391,17 @@ mod macos {
                 return;
             };
             ev.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_count);
+            // Attach the currently-held modifier state to the click. macOS does
+            // NOT fold the session's modifier flags into a synthesized mouse
+            // event on its own, so without this a click while Cmd/Shift/Ctrl/Alt
+            // is held arrives with empty modifierFlags — Cmd+click doesn't open a
+            // link in a new tab, Shift+click doesn't range-select, and Ctrl+click
+            // isn't a secondary click. Mirrors the keyboard path (`key()`), which
+            // set_flags for exactly this reason. And when --map-ctrl-to-cmd is on,
+            // `mouse_event_flags` swaps a plain Ctrl→Cmd so a Windows-style
+            // Ctrl+click opens a link in a new tab (Cmd+click) rather than firing
+            // a secondary/context click.
+            ev.set_flags(self.mouse_event_flags());
             ev.post(CGEventTapLocation::HID);
 
             // On a button-down, record which app's window is under the cursor so
