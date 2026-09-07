@@ -97,8 +97,8 @@ final class HudView: NSView {
             let cellRect = NSRect(x: cx, y: rowY, width: cell, height: cell)
             if i == cursor {
                 // Grey ring around the selected icon (a thin frame past the icon,
-                // which is inset by cellPad). ~1.62px wide (30% thinner than 2.31).
-                let ring: CGFloat = 1.62
+                // which is inset by cellPad). ~0.81px wide.
+                let ring: CGFloat = 0.81
                 let hlRect = cellRect.insetBy(dx: Self.cellPad - ring, dy: Self.cellPad - ring)
                 let radius = cell * 0.18
                 let fill = NSBezierPath(roundedRect: hlRect, xRadius: radius, yRadius: radius)
@@ -123,11 +123,16 @@ final class HudView: NSView {
             let lineH = (attrs[.font] as! NSFont).ascender - (attrs[.font] as! NSFont).descender
             let stripY = Self.outer + (Self.nameH - lineH) / 2
             let selCenterX = Self.outer + CGFloat(cursor) * (cell + Self.gap) + cell / 2
-            let labelW = min(cell * 2.0, bounds.width - Self.outer * 2)
-            var lx = selCenterX - labelW / 2
-            lx = max(Self.outer, min(lx, bounds.width - Self.outer - labelW))
-            let strip = NSRect(x: lx, y: stripY, width: labelW, height: lineH)
-            items[cursor].name.draw(in: strip, withAttributes: attrs)
+            // Size the label to the actual text and center it EXACTLY under the
+            // selected icon; only clamp when the text would overflow the panel
+            // (so a long name near an edge still centers on the icon otherwise).
+            let name = items[cursor].name as NSString
+            let maxW = bounds.width - Self.outer * 2
+            let textW = min(name.size(withAttributes: attrs).width.rounded(.up), maxW)
+            var tx = selCenterX - textW / 2
+            tx = max(Self.outer, min(tx, bounds.width - Self.outer - textW))
+            let strip = NSRect(x: tx, y: stripY, width: textW, height: lineH)
+            name.draw(in: strip, withAttributes: attrs)
         }
     }
 }
