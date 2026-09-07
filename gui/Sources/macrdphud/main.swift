@@ -56,18 +56,34 @@ final class HudView: NSView {
     var items: [HudItem] = []
     var cursor: Int = 0
 
-    static let icon: CGFloat = 72        // icon edge
-    static let cellPad: CGFloat = 10     // padding around each icon (also the highlight inset)
-    static let gap: CGFloat = 4
-    static let outer: CGFloat = 16       // panel margin
-    static let nameH: CGFloat = 26       // selected-name label strip below the row
+    // Icon edge is chosen per-SHOW so the row always fits the display (native
+    // Cmd+Tab shrinks the icons when many apps are open); see `iconEdge(for:in:)`.
+    var iconEdge: CGFloat = defaultIcon
 
-    static var cell: CGFloat { icon + cellPad * 2 }
+    static let defaultIcon: CGFloat = 144 // few-apps size (native uses a large icon)
+    static let minIcon: CGFloat = 32     // floor when many apps are open
+    static let cellPad: CGFloat = 12     // padding around each icon (also the highlight inset)
+    static let gap: CGFloat = 8
+    static let outer: CGFloat = 20       // panel margin
+    static let nameH: CGFloat = 28       // selected-name label strip below the row
+    static let corner: CGFloat = 28      // panel corner radius (matches the blur mask)
 
-    static func size(for count: Int) -> NSSize {
+    var cell: CGFloat { iconEdge + Self.cellPad * 2 }
+
+    func size(for count: Int) -> NSSize {
         let n = max(count, 1)
-        let w = outer * 2 + CGFloat(n) * cell + CGFloat(n - 1) * gap
-        return NSSize(width: w, height: outer * 2 + cell + nameH)
+        let w = Self.outer * 2 + CGFloat(n) * cell + CGFloat(n - 1) * Self.gap
+        return NSSize(width: w, height: Self.outer * 2 + cell + Self.nameH)
+    }
+
+    // Largest icon edge (<= defaultIcon) that keeps `count` cells within `avail`
+    // px of width, floored at minIcon. Invert the width formula for the icon:
+    //   avail = outer*2 + count*(icon + cellPad*2) + (count-1)*gap
+    static func iconEdge(for count: Int, in avail: CGFloat) -> CGFloat {
+        let n = CGFloat(max(count, 1))
+        let fixed = outer * 2 + (n - 1) * gap + n * cellPad * 2
+        let fit = (avail - fixed) / n
+        return max(minIcon, min(defaultIcon, fit))
     }
 
     override var isFlipped: Bool { false } // bottom-left origin
@@ -77,28 +93,40 @@ final class HudView: NSView {
         guard n > 0 else { return }
         let rowY = Self.outer + Self.nameH // icons sit above the name strip
         for (i, item) in items.enumerated() {
-            let cx = Self.outer + CGFloat(i) * (Self.cell + Self.gap)
-            let cellRect = NSRect(x: cx, y: rowY, width: Self.cell, height: Self.cell)
+            let cx = Self.outer + CGFloat(i) * (cell + Self.gap)
+            let cellRect = NSRect(x: cx, y: rowY, width: cell, height: cell)
             if i == cursor {
-                let hl = NSBezierPath(roundedRect: cellRect, xRadius: 14, yRadius: 14)
-                NSColor(white: 1.0, alpha: 0.25).setFill()
-                hl.fill()
+                // Grey ring around the selected icon (a thin frame past the icon,
+                // which is inset by cellPad). ~1.62px wide (30% thinner than 2.31).
+                let ring: CGFloat = 1.62
+                let hlRect = cellRect.insetBy(dx: Self.cellPad - ring, dy: Self.cellPad - ring)
+                let radius = cell * 0.18
+                let fill = NSBezierPath(roundedRect: hlRect, xRadius: radius, yRadius: radius)
+                NSColor(white: 0.22, alpha: 0.5).setFill() // translucent, darker ring
+                fill.fill()
             }
             let iconRect = cellRect.insetBy(dx: Self.cellPad, dy: Self.cellPad)
             item.icon.draw(in: iconRect, from: .zero, operation: .sourceOver, fraction: 1.0)
         }
-        // Selected app's name, centered across the whole panel.
+        // Selected app's name, in dark text centered UNDER the selected icon
+        // (native light-switcher behavior), clamped within the panel.
         if cursor >= 0, cursor < n {
             let style = NSMutableParagraphStyle()
             style.alignment = .center
             style.lineBreakMode = .byTruncatingTail
             let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: NSColor.white,
-                .font: NSFont.systemFont(ofSize: 14, weight: .medium),
+                .foregroundColor: NSColor(white: 0.0, alpha: 0.85),
+                .font: NSFont.systemFont(ofSize: 15, weight: .medium),
                 .paragraphStyle: style,
             ]
-            let strip = NSRect(x: Self.outer, y: Self.outer - 2,
-                               width: bounds.width - Self.outer * 2, height: Self.nameH)
+            // Vertically center the single line in the bottom name strip.
+            let lineH = (attrs[.font] as! NSFont).ascender - (attrs[.font] as! NSFont).descender
+            let stripY = Self.outer + (Self.nameH - lineH) / 2
+            let selCenterX = Self.outer + CGFloat(cursor) * (cell + Self.gap) + cell / 2
+            let labelW = min(cell * 2.0, bounds.width - Self.outer * 2)
+            var lx = selCenterX - labelW / 2
+            lx = max(Self.outer, min(lx, bounds.width - Self.outer - labelW))
+            let strip = NSRect(x: lx, y: stripY, width: labelW, height: lineH)
             items[cursor].name.draw(in: strip, withAttributes: attrs)
         }
     }
@@ -164,14 +192,20 @@ final class HudController {
         p.ignoresMouseEvents = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .stationary]
 
-        // Rounded translucent HUD background.
+        // Rounded translucent light slab, styled to read as the native Cmd+Tab
+        // switcher: continuous (squircle) corner + a faint hairline border.
         let blur = NSVisualEffectView()
-        blur.material = .hudWindow
+        blur.material = .popover // light translucent panel (matches the native switcher)
+        blur.appearance = NSAppearance(named: .vibrantLight) // keep it light regardless of desktop
         blur.state = .active
         blur.blendingMode = .behindWindow
+        blur.alphaValue = 0.72 // more see-through than .popover's default (icons/text stay solid)
         blur.wantsLayer = true
-        blur.layer?.cornerRadius = 16
+        blur.layer?.cornerRadius = HudView.corner
+        blur.layer?.cornerCurve = .continuous
         blur.layer?.masksToBounds = true
+        blur.layer?.borderWidth = 1
+        blur.layer?.borderColor = NSColor(white: 0.0, alpha: 0.10).cgColor
         blur.translatesAutoresizingMaskIntoConstraints = false
         view.translatesAutoresizingMaskIntoConstraints = false
 
@@ -206,13 +240,17 @@ final class HudController {
         let items = apps.map { HudItem(name: $0.name, icon: icon(forPid: $0.pid)) }
         view.items = items
         view.cursor = min(max(cursor, 0), max(items.count - 1, 0))
-        view.needsDisplay = true
 
-        let size = HudView.size(for: items.count)
         // NSScreen.frame is already global Cocoa (bottom-left) coords — no
         // CG→Cocoa conversion needed. Fall back to the main screen.
         let scr = screen(for: displayID) ?? NSScreen.main ?? NSScreen.screens.first
         let f = scr?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        // Shrink the icons so the switcher stays within ~80% of the display width
+        // when many apps are open (native behavior); large icons for a few apps.
+        view.iconEdge = HudView.iconEdge(for: items.count, in: f.width * 0.8)
+        view.needsDisplay = true
+
+        let size = view.size(for: items.count)
         let origin = NSPoint(x: f.midX - size.width / 2, y: f.midY - size.height / 2)
         p.setFrame(NSRect(origin: origin, size: size), display: true)
         // orderFrontRegardless, never makeKey — must not steal focus from the
