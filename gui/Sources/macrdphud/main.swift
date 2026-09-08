@@ -96,13 +96,16 @@ final class HudView: NSView {
             let cx = Self.outer + CGFloat(i) * (cell + Self.gap)
             let cellRect = NSRect(x: cx, y: rowY, width: cell, height: cell)
             if i == cursor {
-                // Grey ring around the selected icon (a thin frame past the icon,
-                // which is inset by cellPad). ~0.81px wide.
-                let ring: CGFloat = 0.81
-                let hlRect = cellRect.insetBy(dx: Self.cellPad - ring, dy: Self.cellPad - ring)
-                let radius = cell * 0.18
-                let fill = NSBezierPath(roundedRect: hlRect, xRadius: radius, yRadius: radius)
-                NSColor(white: 0.22, alpha: 0.5).setFill() // translucent, darker ring
+                // Dark rounded tile BEHIND the icon: it fills the icon's own
+                // transparent margin (so there's no light gap around the icon) and
+                // extends `border` px past the icon as the ring. Drawn before the
+                // icon so the icon sits on top of it. border=0 => the visible dark
+                // is just the icon's built-in padding (thinnest with no gap).
+                let border: CGFloat = 0
+                let tileRect = cellRect.insetBy(dx: Self.cellPad - border, dy: Self.cellPad - border)
+                let radius = cell * 0.2
+                let fill = NSBezierPath(roundedRect: tileRect, xRadius: radius, yRadius: radius)
+                NSColor(white: 0.22, alpha: 0.6).setFill() // dark, translucent
                 fill.fill()
             }
             let iconRect = cellRect.insetBy(dx: Self.cellPad, dy: Self.cellPad)
