@@ -620,13 +620,22 @@ struct Args {
     enable_camera_redirection: bool,
 
     /// EXPERIMENTAL, opt-in (default OFF). Microphone / audio-input redirection
-    /// (MS-RDPEAI) — **Phase 0 protocol gate only**. Advertises the `AUDIO_INPUT`
-    /// DVC and negotiates + logs the client streaming its microphone (a standalone
-    /// mic, or a webcam's built-in mic) so we can confirm a client hands macrdp a
-    /// mic over a server-direction DVC. It does NOT present a macOS microphone yet
-    /// (no virtual audio device). The client must opt in too (mstsc: Remote audio ->
-    /// Settings -> "Record from this computer"; FreeRDP: /microphone). Cross-platform
-    /// (pure protocol). See TODO.md ("Microphone / audio-input redirection").
+    /// (MS-RDPEAI, the `AUDIO_INPUT` DVC) — the client redirects its MICROPHONE (a
+    /// standalone mic, or a webcam's built-in one) and macrdp presents it as a REAL
+    /// macOS input device: "macrdp Microphone" appears in System Settings -> Sound
+    /// -> Input and in QuickTime / Zoom / Teams, carrying the client's live audio.
+    /// Received PCM is fed to a CoreAudio AudioServerPlugIn over a shared-memory
+    /// ring; an idle device reads as digital silence and the feed is latency-bounded
+    /// at ~100 ms. Live-verified end-to-end on a real Win11 client. The client must
+    /// opt in too (mstsc: Remote audio -> Settings -> "Record from this computer";
+    /// FreeRDP: /microphone). REQUIRES the "macrdp Microphone" plug-in to be
+    /// installed once (packaging/install-audio-plugin.sh — a file copy into the
+    /// system HAL plug-ins dir + a coreaudiod restart, one admin prompt, no
+    /// entitlement) — without it macrdp still negotiates and receives the audio, it
+    /// just has no device to feed. Debug: MACRDP_MIC_DUMP=1 writes the received PCM
+    /// to a WAV under $TMPDIR INSTEAD of feeding the device. macOS-only (the device
+    /// half; the protocol half is cross-platform). See TODO.md ("Microphone /
+    /// audio-input redirection").
     #[arg(long)]
     enable_microphone_redirection: bool,
 
