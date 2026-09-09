@@ -396,6 +396,8 @@ mod macos {
     const VK_CAPS_LOCK: u16 = 0x39;
     const VK_G: u16 = 0x05; // kVK_ANSI_G — the on-demand "gather windows" chord
     const VK_R: u16 = 0x0F; // kVK_ANSI_R — the on-demand "A/V resync" chord
+    const VK_LEFT: u16 = 0x7B; // kVK_LeftArrow — step the app switcher backward while it's up
+    const VK_RIGHT: u16 = 0x7C; // kVK_RightArrow — step the app switcher forward while it's up
 
     // macOS virtual keycodes for the left/right halves of each modifier.
     // Used by ModifierState to track which physical key is held so we can
@@ -1143,6 +1145,22 @@ mod macos {
                 return true;
             }
 
+            // Left/Right arrows step an ACTIVE app-switcher cycle, matching
+            // native Cmd+Tab (hold the switcher, arrow to move the selection).
+            // Gated on a live cycle session so bare arrows reach the focused app
+            // the rest of the time; that session only exists while the switcher
+            // modifier is held (Cmd, or Option with --alt-tab-switch), and the
+            // extra cmd||opt guard keeps a stray arrow from a lingering
+            // grace-window session from being swallowed. Right = forward (next in
+            // the row), Left = backward (previous). Reuses cycle_apps, so it
+            // continues the frozen snapshot and drives the HUD's ADVANCE exactly
+            // like a Tab tap. Placed before the `!cmd` gate below because an
+            // Option+Tab session holds Option, not Cmd.
+            if (cmd || opt) && !ctrl && (vk == VK_LEFT || vk == VK_RIGHT) && cycle_session_active() {
+                cycle_apps(vk == VK_LEFT);
+                return true;
+            }
+
             if !cmd {
                 return false;
             }
@@ -1469,6 +1487,16 @@ mod macos {
     }
 
     static CYCLE_SESSION: std::sync::Mutex<Option<CycleSession>> = std::sync::Mutex::new(None);
+
+    /// True while an app-switcher cycle is in flight — i.e. the switcher is up
+    /// and its modifier (Cmd, or Option with `--alt-tab-switch`) is held.
+    /// Lets `try_symbolic_hotkey` route Left/Right arrows into the switcher only
+    /// while it's showing, leaving bare arrows to reach the focused app
+    /// otherwise. A poisoned lock is treated as "no session" (fail open to the
+    /// app, never swallow the arrow).
+    fn cycle_session_active() -> bool {
+        CYCLE_SESSION.lock().is_ok_and(|g| g.is_some())
+    }
 
     /// Incremented every time both Cmd halves transition to released
     /// (see `commit_cycle_session` callers). A `CycleSession` stamps
