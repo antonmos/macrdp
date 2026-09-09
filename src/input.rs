@@ -1156,7 +1156,8 @@ mod macos {
             // continues the frozen snapshot and drives the HUD's ADVANCE exactly
             // like a Tab tap. Placed before the `!cmd` gate below because an
             // Option+Tab session holds Option, not Cmd.
-            if (cmd || opt) && !ctrl && (vk == VK_LEFT || vk == VK_RIGHT) && cycle_session_active() {
+            if (cmd || opt) && !ctrl && (vk == VK_LEFT || vk == VK_RIGHT) && cycle_session_active()
+            {
                 cycle_apps(vk == VK_LEFT);
                 return true;
             }
