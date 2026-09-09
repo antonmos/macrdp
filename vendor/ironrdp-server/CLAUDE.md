@@ -5,6 +5,9 @@ Local fork of ironrdp-server 0.10.0, pulled in via `[patch.crates-io]` in
 (carved out of `dispatch_server_events`) is the live divergence. Keep this
 vendor dir until (2)/(3)/(4)/(5)/(6)/(8)/(9)/(10)/(11)/(12)/(13)/(14)/(15)/(16)/(18)/(19)/(20)/(21)/(22)/(23) below are upstreamed
 AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1c682 pin bump — see (7).)
+**(23) is now UPSTREAMED — Devolutions/IronRDP#1476 MERGED 2026-09-08 (`5198cde0`) — so it drops at the
+next pin bump; it is still listed above because the code is still IN this fork until that bump. Read (23)'s
+de-vendor note before doing it: upstream defaults the feature OFF and macrdp preempts unconditionally.**
 
 (1) The original "keep newest queued waves on per-batch overflow"
     direction-flip LANDED upstream (PR #1276, merged 2026-05-21) — do NOT
@@ -1657,9 +1660,38 @@ AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1
     divergence), after CBenoit independently flagged the bare TPKT-peek as
     unsafe (matching macrdp's 07-27 finding) and that peek shape was rejected.
     #1476 also adds the `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` + anti-storm
-    eviction notice macrdp ships. **OPEN, awaiting CBenoit's merge decision**
-    (issue #1483 is the backing RFC). When it merges + the pin bumps, macrdp
-    de-vendors this divergence.
+    eviction notice macrdp ships. **MERGED 2026-09-08 by CBenoit — merge commit
+    `5198cde0f73485f3fbd999ea7c49293c86b80387`** (issue #1483 is the backing
+    RFC; the prerequisite refactor PR #1588 was left OPEN and is now superseded,
+    its extraction having landed inside #1476). macrdp pins IronRDP by git rev,
+    so NO crates.io release is needed — any rev at-or-after `5198cde0` carries
+    it, and **this divergence drops at the next pin bump.**
+
+    **DE-VENDOR NOTE — READ BEFORE DELETING THIS DIVERGENCE. It is near-drop-in
+    but has ONE trap, and it is the #179 class (a pin bump regressing via a
+    divergence handled wrong at bump time).** Verified 2026-09-09 against the
+    merge commit: all five tunables are IDENTICAL to this fork's, constant for
+    constant — `EVICTION_GRACE` 750 ms, `REPREEMPT_COOLDOWN` 5 s,
+    `REPREEMPT_MAX_LOCKOUT` 30 s, `CANDIDATE_NEGOTIATION_TIMEOUT` 10 s,
+    `CANDIDATE_HANDOFF_GRACE` 750 ms — and every load-bearing fn is present
+    (`negotiate_candidate`, `serve_negotiated`, `negotiate_and_authenticate`,
+    plus the stale-event discard under upstream's name
+    `discard_stale_session_events` = this fork's
+    `discard_stale_eviction_events`). So the bump is an ADOPTION, not a re-port.
+
+    THE TRAP: **upstream's `preempt_existing_session` defaults to `false`**
+    (queue-behind; it merged off-by-default, the default question was raised by
+    CBenoit on 09-08 and left unresolved in code), whereas THIS fork preempts
+    **unconditionally** — there is no option, which is why the builder chain in
+    `src/main.rs` has no preemption call at all. Deleting this divergence
+    WITHOUT adding **`.with_preempt_existing_session(true)`** to that chain
+    silently reverts second-client takeover to the pre-#174 hang, **with no
+    compile error to catch it** (the option simply stays at its default). Same
+    failure class as #179, mirrored: there a stale divergence double-corrected,
+    here a missing call un-corrects. Re-run the conn_test coverage
+    (`a_silent_candidate_cannot_wedge_the_accept_loop`,
+    `second_client_preempts_the_live_session`) after the bump, and re-verify a
+    real second-client takeover on a live client before cutting a release.
 
     **Eviction must tell the loser WHY, or the two clients ping-pong forever
     (2026-07-27, found in live testing of the above — the failure that made
