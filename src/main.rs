@@ -603,14 +603,19 @@ struct Args {
     #[arg(long)]
     enable_usb_redirection: bool,
 
-    /// EXPERIMENTAL, opt-in (default OFF). Camera redirection (MS-RDPECAM) —
-    /// **Phase 0 protocol gate only**. Advertises the `RDCamera_Device_Enumerator`
-    /// DVC and logs the client's camera announcement (`DEVICE_ADDED_NOTIFICATION`)
-    /// so we can confirm a modern mstsc/Win11 will hand macrdp a redirected webcam
-    /// over MS-RDPECAM. It does NOT present a camera yet (no per-device channel, no
-    /// stream, no macOS code). The client must opt in too (mstsc: Local Resources ->
-    /// More -> "Video capture devices"). Cross-platform (pure protocol). See
-    /// docs/rdp-camera-redirection-feasibility.md.
+    /// Opt-in (default OFF). Camera redirection (MS-RDPECAM) — the client redirects
+    /// its WEBCAM and macrdp presents it as a REAL macOS camera: "macrdp Camera"
+    /// becomes selectable in Photo Booth / Zoom / FaceTime / Teams, showing the
+    /// client's live video. H.264 samples over the RDCamera DVC -> VideoToolbox
+    /// decode -> CoreMediaIO sink (zero-copy) -> a CoreMediaIO Camera system
+    /// extension. Live-verified on mstsc at 1080p/~30 fps. The client must opt in
+    /// too (mstsc: Local Resources -> More -> "Video capture devices", enabled
+    /// BEFORE connecting). REQUIRES the camera system extension to be installed +
+    /// activated once (macrdpController.app -> "Enable macrdp Camera...", needs the
+    /// signed + notarized build) — without it macrdp still negotiates and decodes,
+    /// it just has no camera to feed. Debug: MACRDP_CAMERA_DUMP=1 writes the raw
+    /// H.264 + the first decoded frames as PNG to $TMPDIR. macOS-only. See
+    /// docs/camera-extension-setup.md.
     #[arg(long)]
     enable_camera_redirection: bool,
 
