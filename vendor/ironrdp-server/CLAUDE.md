@@ -1928,6 +1928,16 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     "the loop never accepted it" — and pass with it.
 
 (24) Server-direction MS-RDPEAI audio-input (microphone) redirection — the
+    ⚠️ **NUMBER COLLISION — RENUMBER THIS TO (25) BEFORE MERGING.** PR #182
+    (@antonmos, `fix(ironrdp-server): bound accept_finalize`) also claims (24),
+    for the `FINALIZE_TIMEOUT` bound. Neither exists on `main`, so both branches
+    saw (24) as free. #182 is review-ready while this branch still needs P3, so
+    **#182 lands first and keeps (24)** — this divergence becomes (25). Renumber
+    every reference (this heading, the header list at the top of this file, the
+    `(vendored, divergence 24)` markers in `src/audin.rs`, and any `div-24` in
+    TODO.md / memory) when rebasing onto a `main` that carries #182. Two (24)s in
+    this log is exactly the kind of divergence-bookkeeping slip that produced
+    #179 at pin-bump time. (Recorded 2026-09-12.)
     `AUDIO_INPUT` DVC. **Phase 0 (protocol gate) only**; NOT upstreamed; added
     2026-07-27; behind macrdp's `--enable-microphone-redirection` (opt-in, default
     OFF). The RDP client redirects its microphone (a standalone mic, or a webcam's
