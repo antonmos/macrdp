@@ -1212,6 +1212,13 @@ mod macos {
             if let Some(flag) = display_suppressed.as_ref() {
                 flag.store(false, Ordering::Relaxed);
             }
+            // Same shape, for held-modifier state: the input handler is
+            // process-lifetime, so a Ctrl whose key-up never arrived would
+            // otherwise survive into this connection and make every left
+            // click a secondary click. `RdpServerInputHandler` has no
+            // per-connection hook of its own, so the connect edge is borrowed
+            // from here. See `input::request_modifier_reset`.
+            crate::input::request_modifier_reset();
 
             Ok(Self {
                 stream,
