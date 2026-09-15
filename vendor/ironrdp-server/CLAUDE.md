@@ -7,7 +7,7 @@ vendor dir until (2)/(3)/(4)/(5)/(6)/(8)/(9)/(10)/(11)/(12)/(13)/(14)/(15)/(16)/
 AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1c682 pin bump — see (7).)
 **(23) is now UPSTREAMED — Devolutions/IronRDP#1476 MERGED 2026-09-08 (`5198cde0`) — so it drops at the
 next pin bump; it is still listed above because the code is still IN this fork until that bump. Read (23)'s
-de-vendor note before doing it: upstream defaults the feature OFF and macrdp preempts unconditionally.**
+de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` and macrdp preempts unconditionally.**
 
 (1) The original "keep newest queued waves on per-batch overflow"
     direction-flip LANDED upstream (PR #1276, merged 2026-05-21) — do NOT
@@ -1679,16 +1679,46 @@ de-vendor note before doing it: upstream defaults the feature OFF and macrdp pre
     `discard_stale_session_events` = this fork's
     `discard_stale_eviction_events`). So the bump is an ADOPTION, not a re-port.
 
-    THE TRAP: **upstream's `preempt_existing_session` defaults to `false`**
-    (queue-behind; it merged off-by-default, the default question was raised by
-    CBenoit on 09-08 and left unresolved in code), whereas THIS fork preempts
-    **unconditionally** — there is no option, which is why the builder chain in
-    `src/main.rs` has no preemption call at all. Deleting this divergence
-    WITHOUT adding **`.with_preempt_existing_session(true)`** to that chain
+    **API CHANGED AFTER THE MERGE — read this before trusting any older note.**
+    #1476 shipped a `preempt_existing_session: bool` option with a
+    `with_preempt_existing_session` builder method. Three days later
+    **Devolutions/IronRDP#1913** (@maryny4, merged 2026-09-11 by CBenoit, commit
+    `f7732a16`) REMOVED both and replaced them with an enum,
+    `ConnectionPolicy { Queue, Reject, Preempt }`, set via
+    **`RdpServerBuilder::with_connection_policy(ConnectionPolicy)`** (`#[must_use]`).
+    `Preempt` keeps #1476's full-auth gating and the five tunables above are
+    still identical — re-verified 2026-09-15 against both the merge commit and
+    current master. An earlier version of THIS note told you to add
+    `.with_preempt_existing_session(true)`; that method no longer exists.
+
+    **NOT PURELY DROP-IN — one behavior this fork does NOT have.** Upstream's
+    `Preempt` (present since the #1476 merge, still on master) calls
+    `invalidate_auto_reconnect_cookie_on_eviction()` after an eviction, so the
+    evicted client can't silently reclaim via its ARC cookie. This fork has no
+    equivalent (0 references on main, checked 2026-09-15). The five constants and
+    four functions matching is necessary but not sufficient: adopting upstream
+    ADDS this at the bump. It's probably an improvement (it closes the ARC
+    fast-path back into an evicted slot, complementing the anti-storm window),
+    but it sits squarely on the reconnect path `REPREEMPT_MAX_LOCKOUT`'s headline
+    case depends on — a client whose link dropped, auto-reconnecting to reclaim
+    its own stale session. When the incumbent and the newcomer are the SAME
+    client, check that the invalidation targets the stale session's cookie and
+    not the winner's freshly issued one. Verify a live reclaim-after-link-drop at
+    the bump, not just the conn_test coverage.
+
+    THE TRAP (unchanged by #1913, only renamed): **the default is
+    `ConnectionPolicy::Queue`** (queue-behind — kept for compatibility; CBenoit's
+    09-08 question about what the default should ultimately be is still
+    unresolved in code), whereas THIS fork preempts **unconditionally** — there is
+    no option, which is why the builder chain in `src/main.rs` has no preemption
+    call at all. Deleting this divergence WITHOUT adding
+    **`.with_connection_policy(ConnectionPolicy::Preempt)`** to that chain
     silently reverts second-client takeover to the pre-#174 hang, **with no
-    compile error to catch it** (the option simply stays at its default). Same
+    compile error to catch it** (the policy simply stays at its default). Same
     failure class as #179, mirrored: there a stale divergence double-corrected,
-    here a missing call un-corrects. Re-run the conn_test coverage
+    here a missing call un-corrects. (If you instead copy the OLD method name
+    from a stale note, you get a compile error — the safe failure. Leaving the
+    call out entirely is the dangerous one.) Re-run the conn_test coverage
     (`a_silent_candidate_cannot_wedge_the_accept_loop`,
     `second_client_preempts_the_live_session`) after the bump, and re-verify a
     real second-client takeover on a live client before cutting a release.
