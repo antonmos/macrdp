@@ -1691,7 +1691,9 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     current master. An earlier version of THIS note told you to add
     `.with_preempt_existing_session(true)`; that method no longer exists.
 
-    **NOT PURELY DROP-IN — one behavior this fork does NOT have.** Upstream's
+    **NOT PURELY DROP-IN — two behaviors differ, in opposite directions.**
+
+    (i) Something upstream does that this fork doesn't. Upstream's
     `Preempt` (present since the #1476 merge, still on master) calls
     `invalidate_auto_reconnect_cookie_on_eviction()` after an eviction, so the
     evicted client can't silently reclaim via its ARC cookie. This fork has no
@@ -1705,6 +1707,34 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     client, check that the invalidation targets the stale session's cookie and
     not the winner's freshly issued one. Verify a live reclaim-after-link-drop at
     the bump, not just the conn_test coverage.
+
+    (ii) **A bug upstream has that this fork already fixed — adopting upstream
+    re-introduces it.** Upstream's `Preempt` arm TAKES the handler for the race
+    (`let handler = self.connection_handler.take()`) before building the live
+    connection and only restores it afterwards. Every served connection then
+    reaches `client_accepted` with `self.connection_handler == None`, so any hook
+    fired through that field during the race is silently skipped — on upstream
+    master that means `on_connection_info` never fires under `Preempt`. This is
+    precisely the "first cut" failure divergence (22) above records, which this
+    fork fixed by sharing the handler as `Rc<RefCell<Box<dyn ConnectionHandler>>>`.
+    For macrdp the consequence at a naive bump is concrete: the audit hooks
+    (`on_authenticated` → `event="auth"`, `on_client_fingerprint` →
+    `event="fingerprint"`) go silent under `Preempt`, which is macrdp's only mode —
+    `scripts/test-audit-log.sh` is the CI test that catches it, the same way it
+    caught divergence (22) the first time. Do NOT de-vendor divergences (22)/(23)
+    onto an upstream that still `.take()`s the handler for the race: either the
+    upstream fix lands first, or this fork keeps its shared handler across the
+    bump. Found 2026-09-15 by static trace on upstream master `d2bb7376` while
+    porting the #1484 `on_authenticated` hook, then REPRODUCED 2026-09-16 with an
+    e2e test driving a real client through `RdpServer::run()` under each policy:
+    `Queue` and `Reject` pass, `Preempt` fails with `on_accept=true,
+    on_connection_info=false` (deterministic over repeated runs). Confirmed causal,
+    not just correlated: removing the `.take()` makes all three pass. It also
+    breaks upstream's own documented contract (`on_connection_info` "is called from
+    every code path that completes connection setup"). Being filed upstream. Note
+    for whoever fixes it upstream: `RdpServer` is ALREADY `!Send` there (non-`Send`
+    sound/cliprdr/rdpei factories — verified with a compile-time assert), so this
+    fork's `Rc<RefCell<..>>` approach adds no new `Send` constraint.
 
     THE TRAP (unchanged by #1913, only renamed): **the default is
     `ConnectionPolicy::Queue`** (queue-behind — kept for compatibility; CBenoit's
