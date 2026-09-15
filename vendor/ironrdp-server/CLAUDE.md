@@ -1928,6 +1928,8 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     "the loop never accepted it" — and pass with it.
 
 (24) Server-direction MS-RDPEAI audio-input (microphone) redirection — the
+    `AUDIO_INPUT` DVC.
+
     ⚠️ **NUMBER COLLISION — RENUMBER THIS TO (25) BEFORE MERGING.** PR #182
     (@antonmos, `fix(ironrdp-server): bound accept_finalize`) also claims (24),
     for the `FINALIZE_TIMEOUT` bound. Neither exists on `main`, so both branches
@@ -1938,8 +1940,11 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     TODO.md / memory) when rebasing onto a `main` that carries #182. Two (24)s in
     this log is exactly the kind of divergence-bookkeeping slip that produced
     #179 at pin-bump time. (Recorded 2026-09-12.)
-    `AUDIO_INPUT` DVC. **Phase 0 (protocol gate) only**; NOT upstreamed; added
-    2026-07-27; behind macrdp's `--enable-microphone-redirection` (opt-in, default
+
+    NOT upstreamed; added 2026-07-27. Began as the Phase 0 protocol gate; the
+    processor now feeds a real sink — macrdp's P2 shared-memory ring into the
+    "macrdp Microphone" AudioServerPlugIn, live- and ear-verified 2026-09-01.
+    Behind macrdp's `--enable-microphone-redirection` (opt-in, default
     OFF). The RDP client redirects its microphone (a standalone mic, or a webcam's
     built-in mic) and macrdp — the server — receives it. New `src/audin.rs` houses
     `AudinServer` (a `DvcProcessor`+`DvcServerProcessor` on the single `AUDIO_INPUT`
@@ -1965,9 +1970,10 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
       Soft-Sync one.
     - **The sink seam for Phase 2:** `pub trait AudinSampleSink { fn on_format;
       fn on_data }` (mirrors `CameraSampleSink`), and `AudinServer::new(Option<Box<
-      dyn AudinSampleSink>>)`. Phase 0 passes `None` (log + drop — the go/no-go gate);
-      Phase 2's macOS virtual microphone (an `AudioServerPlugIn` fed via
-      shared-memory) sits behind the sink on the macrdp side.
+      dyn AudinSampleSink>>)`. Phase 0 passed `None` (log + drop — the go/no-go gate);
+      since P1/P2 macrdp passes a real sink — a WAV dump under `MACRDP_MIC_DUMP`,
+      otherwise the shared-memory feed into the `AudioServerPlugIn` — built in
+      `src/audin/mod.rs`.
     - Wiring (post-#174 factory architecture, divergence 23): `audin_factory` field
       is `Option<Rc<dyn AudinServerFactory>>` on `RdpServer` (Box in the `new` param
       + builder, wrapped `Rc::from` in `new` like the others), attached via the free
@@ -1977,9 +1983,17 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
       channel is stateless per-connection, no process-wide shared mutation. No
       `set_sender` (the factory has no `ServerEventSender`). macrdp's cross-platform
       `src/audin/mod.rs` (`MacAudin`) is the factory.
-    Cleanly upstreamable as the server counterpart to a (nonexistent-upstream)
-    client MS-RDPEAI. Reference: FreeRDP `channels/audin/server/`. **Phase 0 LIVE-VERIFIED GREEN
+    **UPSTREAM NOW HAS THIS (2026-09-16) — no longer an upstreaming candidate as-is.**
+    The `ironrdp-rdpeai` crate (Devolutions/IronRDP#1645, merged 2026-08-12) already
+    provides `RdpeaiServer`, and glamberson's open #1946 wires it into
+    `ironrdp-server` (`RdpeaiServerFactory` / `with_rdpeai_factory`, mirroring the
+    rdpdr and sound factories). At the next pin bump, evaluate adopting that instead
+    of carrying `AudinServer`, and diff the behavior first — including format
+    negotiation, where an UNVERIFIED 2026-09-12 review finding says this processor
+    opens the client's first offered format without checking it matches the ring's
+    44.1 kHz / 16-bit PCM. Reference: FreeRDP `channels/audin/server/`. **Phase 0 LIVE-VERIFIED GREEN
     2026-09-01** — a real Win11 client (mstsc "Record from this computer" / FreeRDP
     `/microphone`) opened AUDIO_INPUT, negotiated PCM mono 44.1k/16, and streamed the
-    mic continuously (5000+ packets, ~2.2 MB). Next: Phase 2 = the macOS
-    AudioServerPlugIn virtual mic behind `AudinSampleSink`.
+    mic continuously (5000+ packets, ~2.2 MB). Phase 2 — the macOS AudioServerPlugIn
+    virtual mic behind `AudinSampleSink` — is DONE, live- and ear-verified 2026-09-01;
+    P3 (packaging, cleanup, docs) remains.

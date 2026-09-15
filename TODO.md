@@ -154,8 +154,42 @@ then delete; promote a parked item to *In flight* when work actually starts.
     **P2c ✅ DONE + VERIFIED** (2026-09-01) — plug-in no-feed output → SILENCE (verified idle = digital zeros,
     tone behind compile-time `MACRDP_MIC_FALLBACK_TONE`), and a latency bound (~0.75 s → ~100 ms, jitter-safe);
     live-verified no dropouts. Resample / drift deferred (mstsc uses 44100, none observed).
-    **P3** — disconnect cleanup, silence/mute handling, install-from-app embedding (ship macrdp-mic.driver in
-    macrdp.app/Contents/Resources like the ifd bundle).
+    **P3 — remaining before merge (status 2026-09-16):**
+    - [x] CLI help: `--enable-microphone-redirection` no longer claims "Phase 0 protocol gate only" (`ec389e5`).
+      The camera flag had the same stale text since v0.9.0, fixed in `0a6f13b`.
+    - [ ] Install-from-app embedding: ship `macrdp-mic.driver` in `macrdp.app/Contents/Resources` like the ifd
+      bundle, activated from the controller. Today it's a hand-installed copy in the system HAL plug-ins dir,
+      loaded by coreaudiod independently of which macrdp build is installed.
+    - [ ] Disconnect cleanup + silence/mute handling.
+    - [ ] Docs before merge: no mic entry yet in `docs/cli.md`, `docs/features.md`, `docs/architecture.md` or
+      `docs/configuration.md`. Stale "Phase 0" / "440 Hz test tone" wording remains in source comments and
+      strings: `packaging/install-audio-plugin.sh`'s closing message, `audioplugin/macrdp_mic.c`'s header and
+      `ring_map` log lines, the `src/audin/mod.rs` module doc, and the `vendor/ironrdp-server/src/audin.rs`
+      header. (Divergence (24)'s entry in the vendored `CLAUDE.md` was refreshed 2026-09-16.)
+    - [ ] **Verify the 2026-09-12 code-review findings — UNVERIFIED.** A review aimed at PR #183 ran against this
+      branch by mistake; nothing below has been checked against the code yet. Security first:
+      - the shm ring is created `0666` (with an explicit `fchmod`) and never `shm_unlink`ed, so any local
+        account could record or inject the redirected mic — broader than the same-user trust boundary in
+        `docs/macos-gotchas.md`, which doesn't list this channel; `O_CREAT` without `O_EXCL` also allows a
+        pre-created segment;
+      - the plug-in's `DoIOOperation` trusts `ring_frames`/`channels` read from that segment, a possible
+        out-of-bounds read inside `coreaudiod`;
+      - `StopIO` unmaps `gRing` while the real-time `DoIOOperation` may still be reading it;
+      - `build_processor` maps the ring for every connection, including a preemption candidate (two writers
+        on a single-producer ring) and before authentication.
+      Correctness: the server advertises 48 kHz but the ring is fixed at 44.1 kHz, and the client's first
+      offered format is opened without checking rate/bits/codec; `MACRDP_MIC_DUMP=0` (any value) enables the
+      dump and silences the device, and `MIC_DUMP` isn't bridged from `config.env`; `ring_map` never retries
+      if the device opens before the segment exists; the Rust/C ring-layout test asserts copied numbers
+      rather than the header; `WavDumpSink::on_format` doesn't finalize or reset on renegotiation; the 250 ms
+      latency-skip threshold sits below the documented socket-stall magnitudes; `micfeed_test.c` still has the
+      ftruncate-on-reuse bug the Rust side fixed. Full list in the `project_microphone_redirection` memory.
+    - [ ] Renumber vendored divergence (24) → (25) when rebasing onto a `main` that carries PR #182 (the marker
+      is at the divergence heading).
+    - [ ] Weigh the upstream overlap before merging: the `ironrdp-rdpeai` crate (Devolutions/IronRDP#1645) already
+      provides `RdpeaiServer`, and #1946 (open) wires it into `ironrdp-server`. Adopting it may beat carrying
+      `AudinServer` as a divergence.
+    - [ ] Rebase: the branch is local-only, 17 commits ahead of and 6 behind `main` (2026-09-16).
   - **Module placement:** new `src/audio_input/` (`mod.rs` = the `AUDIO_INPUT` DVC backend + factory/policy,
     `feed.rs` = the shared-memory producer into the HAL plug-in), mirroring `src/camera/`. The plug-in bundle:
     `gui/Sources/macrdpmic` (an `AudioServerPlugIn` `.driver`) + a `packaging/make-audio-plugin.sh` +
