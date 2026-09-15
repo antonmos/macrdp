@@ -904,6 +904,20 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     ~60s after a de-migration (its multitransport dead-tunnel timeout on the now-silent
     UDP tunnel) — keepalive or cleanly close the abandoned tunnel on de-migrate.
 
+    **UPSTREAM PATH IN FLIGHT (2026-09-16).** glamberson's stacked PRs, all OPEN:
+    #1951 (server-side UDP multitransport bootstrapping) → #1953
+    (`accept_finalize_with_multitransport` driver) → #1954 (wires it into
+    `ironrdp-server` via `RdpServerBuilder::with_udp_transport`). Per #1954's
+    description it covers reliable-UDP EGFX migration via Soft-Sync with a TCP
+    fallback on setup failure. Differences from this divergence, as described: it
+    migrates EGFX automatically whenever UDP is configured, whereas macrdp keeps that
+    behind `--udp-migrate-egfx` (default off) because a reliable tunnel head-of-line
+    blocks under loss exactly like TCP; it mentions no recovery from a tunnel that
+    wedges mid-session (macrdp's watchdog de-migration + tunnel-death detection); it
+    has no lossy UDP audio (macrdp's DTLS path stays a divergence); and it has no
+    end-to-end UDP handshake test. If the stack merges, the reliable-EGFX half of
+    (12) may de-vendor at a bump; the rest stays.
+
 (13) Server Auto-Reconnect Cookie (MS-RDPBCGR ARC_SC_PRIVATE_PACKET) — NOT
     upstreamed; added 2026-07-02. `RdpServer` gains `auto_reconnect_cookie:
     Option<rdp::session_info::ServerAutoReconnect>` (default None) + a
@@ -1404,7 +1418,23 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     `--fork-workers` the verdict happens in a worker running with
     `connection_handler = None`, so the hook doesn't fire there (fork-workers
     keeps its exit-code-derived accept/disconnect audit); documented as a v1
-    boundary.
+    boundary. (`--fork-workers` was removed in v0.8.36, so that boundary no longer
+    applies.)
+
+    **UPSTREAM STATUS (2026-09-16).** Proposed as Devolutions/IronRDP#1484, which
+    asked whether an observation hook or `CredentialValidator` is the right seam.
+    glamberson replied 2026-09-05 that the design is settled (#1691's
+    `on_connection_info` covers the success boundary; `on_authenticated` covers the
+    failure-with-reason edge) and to file the patch — a peer's green light, not a
+    maintainer's. The held patch (IronRDP clone, branch
+    `feat/connection-handler-on-authenticated` @ `68fc3a7b`) is 392 commits stale
+    and conflicts: #1476 moved negotiation into `negotiate_and_authenticate`,
+    which takes no `&mut self`, so the hook must fire at its call sites.
+    **BLOCKED on Devolutions/IronRDP#1969:** upstream's `ConnectionPolicy::Preempt`
+    takes the handler out of `self` for the race, so a hook fired through
+    `self.connection_handler` is silently dead under `Preempt` — macrdp's only mode,
+    which would zero the `event="auth"` SIEM stream after a bump. Land the #1969
+    handler-sharing fix first, then this hook.
 
 (19) Server-direction MS-RDPECAM camera redirection — **COMPLETE; shipped in
     macrdp v0.9.0** (NOT upstreamed; added 2026-07-16 as a Phase-0 gate, finished
