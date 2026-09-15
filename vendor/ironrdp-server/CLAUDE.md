@@ -1731,7 +1731,8 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     on_connection_info=false` (deterministic over repeated runs). Confirmed causal,
     not just correlated: removing the `.take()` makes all three pass. It also
     breaks upstream's own documented contract (`on_connection_info` "is called from
-    every code path that completes connection setup"). Being filed upstream. Note
+    every code path that completes connection setup"). Filed upstream as
+    **Devolutions/IronRDP#1969** (2026-09-16) — check its status at the bump. Note
     for whoever fixes it upstream: `RdpServer` is ALREADY `!Send` there (non-`Send`
     sound/cliprdr/rdpei factories — verified with a compile-time assert), so this
     fork's `Rc<RefCell<..>>` approach adds no new `Send` constraint.
