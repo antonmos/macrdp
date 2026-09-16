@@ -391,8 +391,7 @@ pub fn set_map_ctrl_to_cmd(on: bool) {
     MAP_CTRL_TO_CMD.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Set at the start of every RDP connection (from the capture path) and drained
-/// by the next input event, to clear stale held-modifier state.
+/// Shared per-SERVED-connection reset flag for held-modifier + button state.
 ///
 /// Modifier state lives in `Inner`, which is constructed ONCE for the process,
 /// so a modifier whose key-up never arrived — the classic case being the client
@@ -402,17 +401,32 @@ pub fn set_map_ctrl_to_cmd(on: bool) {
 /// turns every left click into a secondary click, so it needs a way out. The
 /// MS-RDPBCGR Synchronize PDU can't provide one — it carries only lock keys
 /// (Caps/Num/Scroll/Kana), never Ctrl/Shift/Alt/Cmd — hence this out-of-band
-/// flag. `RdpServerInputHandler` has no per-connection hook of its own (just
-/// `keyboard`/`mouse`), so the connection edge is borrowed from the capture
-/// path, the same seam that already resets `display_suppressed` per connection.
-static MODS_RESET_REQUEST: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+/// flag. The same reset also clears button-down tracking, which fixes a
+/// pre-existing hazard: a connection dropped between a left-down and its up
+/// left `left_down` stuck, so every move on the next connection posted as
+/// `LeftMouseDragged`.
+///
+/// **Who raises it matters.** `RdpServerInputHandler` has only
+/// `keyboard`/`mouse`, so the connection edge has to come from the server, and
+/// it is raised (vendored `ironrdp-server` divergence 24) once at the top of
+/// `run_connection` / `serve_negotiated` — the two places that each call
+/// `accept_finalize` exactly once, with reactivations looping *inside* it. Two
+/// tempting seams were rejected: the display `updates()` path (re-runs on every
+/// live resize and blank-recovery reactivation, so it would clear a held
+/// modifier — and, once button state is included, break a drag — with no user
+/// action), and `on_accept` (runs for preemption *candidates* while the live
+/// session is still being served, so a mere connection attempt could clear the
+/// live session's modifiers).
+static MODS_RESET_REQUEST: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+    std::sync::OnceLock::new();
 
-/// Ask the input handler to drop any held non-lock modifiers before it
-/// processes its next event. Lock-free and idempotent, so callers may invoke it
-/// unconditionally on every connection.
-pub fn request_modifier_reset() {
-    MODS_RESET_REQUEST.store(true, std::sync::atomic::Ordering::Relaxed);
+/// The shared reset flag. Hand a clone to the server via
+/// `RdpServer::set_input_reset_handle`; the input handler drains it on its next
+/// event. Idempotent — every call returns the same `Arc`.
+pub fn modifier_reset_handle() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    MODS_RESET_REQUEST
+        .get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        .clone()
 }
 
 /// Bundle ids whose frontmost focus suppresses the Ctrl→Cmd remap, in ADDITION to
@@ -762,6 +776,10 @@ mod macos {
         // Monotonic ms of the previous input event, for the idle-gap modifier
         // resync in `resync_modifiers_if_stale`. u64::MAX = no event yet.
         last_event_ms: u64,
+        // The shared per-served-connection reset flag (see `modifier_reset_handle`
+        // at file scope). Cloned once here so draining it per event is a bare
+        // atomic swap, not an `Arc` clone.
+        reset_request: std::sync::Arc<std::sync::atomic::AtomicBool>,
         // Optional non-US keyboard layout. When set, ordinary typing keys are
         // translated to characters against this layout and posted as Unicode
         // strings instead of positional keycodes. `None` → keycode path only.
@@ -847,6 +865,7 @@ mod macos {
                 remapped_keys: HashSet::new(),
                 left_click_remapped: false,
                 last_event_ms: u64::MAX,
+                reset_request: super::modifier_reset_handle(),
                 layout,
                 klid_handle,
                 last_klid: 0,
@@ -915,29 +934,47 @@ mod macos {
             }
         }
 
-        /// Drop stale held modifiers before processing an event.
+        /// Drop stale per-connection input state before processing an event.
         ///
-        /// Both triggers target one failure: a modifier key-up that never
-        /// arrived leaves `mods` asserting a key the user is not holding, and
-        /// once clicks carry the modifier flags a stuck Ctrl turns every left
-        /// click into a secondary click. Nothing in the protocol reconciles a
-        /// held modifier (Synchronize carries lock keys only), so:
+        /// Both triggers exist because a modifier key-up that never arrived
+        /// leaves `mods` asserting a key the user is not holding, and once
+        /// clicks carry the modifier flags a stuck Ctrl turns every left click
+        /// into a secondary click. Nothing in the protocol reconciles a held
+        /// modifier (Synchronize carries lock keys only). But the two triggers
+        /// clear DIFFERENT amounts, deliberately:
         ///
-        ///  * **A new connection** (`MODS_RESET_REQUEST`, set from the capture
-        ///    path's per-connection `start`) — deterministic, and the reason a
-        ///    reconnect now clears the condition instead of inheriting it for
-        ///    the life of the process (`Inner` is constructed once).
+        ///  * **A new served connection** (`reset_request`, raised by the
+        ///    vendored server once at the top of `run_connection` /
+        ///    `serve_negotiated` — never on a reactivation, never for a
+        ///    preemption candidate) — clears EVERYTHING, unconditionally:
+        ///    modifiers, the click latch, outstanding remapped key-downs, and
+        ///    any button still down — which is RELEASED (a synthetic Up through
+        ///    `button()`), not merely forgotten, since macOS itself still
+        ///    believes it held. Nothing from the previous connection is live,
+        ///    so none of it is worth preserving — and the button release in
+        ///    particular fixes a pre-existing hazard: a drop between a left-down
+        ///    and its up left `left_down` stuck, so every move on the next
+        ///    connection posted as `LeftMouseDragged` (a phantom drag) until the
+        ///    user next clicked. This is also why the clears are NOT gated on
+        ///    "a modifier was held": a connection can end with the modifier
+        ///    already released but a remapped key-up or the left-up still
+        ///    outstanding, and that state must not leak into the next one.
+        ///
         ///  * **An idle gap** of `mods_resync_idle_ms()` — covers the common
-        ///    case that involves no disconnect at all: the client loses focus
-        ///    mid-session (the user alt-tabs away on the client side), the
-        ///    modifier is released where we cannot see it, and the key-up is
-        ///    never forwarded.
+        ///    case with no disconnect at all (the client loses focus mid-session,
+        ///    the modifier is released where we cannot see it) — clears
+        ///    modifiers ONLY. A click or drag in progress inside a live
+        ///    connection is legitimate state: a drag held still sends no events,
+        ///    so clearing button state here would drop it; and clearing the
+        ///    latch here would undo the down/up consistency fix (Ctrl+down,
+        ///    release Ctrl, hold still past the threshold, release → the up must
+        ///    still post with the Cmd the down carried).
         ///
-        /// The gap is deliberately generous, and the cost asymmetry is the point:
-        /// a false clear costs one keystroke (re-press the modifier), a missed one
-        /// costs every click until the server restarts. Any event — a mouse move
-        /// included — refreshes the timer, so the only false-positive shape is a
-        /// genuine multi-second hold with zero input in between.
+        /// The idle gap is deliberately generous, and the cost asymmetry is the
+        /// point: a false clear costs one keystroke (re-press the modifier), a
+        /// missed one costs every click until the server restarts. Any event — a
+        /// mouse move included — refreshes the timer, so the only false-positive
+        /// shape is a genuine multi-second hold with zero input in between.
         fn resync_modifiers_if_stale(&mut self) {
             let now = monotonic_ms();
             let idle_ms = mods_resync_idle_ms();
@@ -945,34 +982,61 @@ mod macos {
                 && idle_ms > 0
                 && now.saturating_sub(self.last_event_ms) >= idle_ms;
             self.last_event_ms = now;
-            let reconnected =
-                super::MODS_RESET_REQUEST.swap(false, std::sync::atomic::Ordering::Relaxed);
+            let reconnected = self
+                .reset_request
+                .swap(false, std::sync::atomic::Ordering::Relaxed);
             if !(idled || reconnected) {
                 return;
             }
-            // Snapshot the flags first so the log shows WHAT was stuck.
-            let stuck = self.mods.cg_flags().bits();
-            if !self.mods.clear_non_lock() {
-                return;
+
+            if reconnected {
+                // Connection edge: release any button macOS still believes is
+                // held — we posted the Down, the connection died before the Up.
+                // Go through `button()` so the Up carries the same (latched)
+                // flags the Down did and the click bookkeeping stays paired,
+                // and do it BEFORE clearing modifiers so the pair can't
+                // disagree. This also zeroes `left_down`/`right_down`/
+                // `middle_down`, so the next move posts as MouseMoved, not a
+                // phantom `LeftMouseDragged`.
+                if self.left_down {
+                    self.button(CGMouseButton::Left, false);
+                }
+                if self.right_down {
+                    self.button(CGMouseButton::Right, false);
+                }
+                if self.middle_down {
+                    self.button(CGMouseButton::Center, false);
+                }
             }
-            debug!(
-                reason = if reconnected {
-                    "new connection"
-                } else {
-                    "idle gap"
-                },
-                stuck_flags = format!("0x{stuck:08X}"),
-                "clearing stale held modifiers"
-            );
-            // Any outstanding Ctrl→Cmd remapped key-down / latched click belongs
-            // to the modifier state we just dropped; a later key-up must post
-            // plain, not swapped.
-            self.remapped_keys.clear();
-            self.left_click_remapped = false;
-            // Tell macOS too: our earlier FlagsChanged left the session state
-            // asserting the modifier, and macOS derives press-vs-release from the
-            // flags diff, so one event carrying the now-empty set releases all.
-            self.post_flags_changed(VK_LCMD);
+
+            // Snapshot first so the log shows WHAT was stuck.
+            let stuck = self.mods.cg_flags().bits();
+            let had_mods = self.mods.clear_non_lock();
+
+            if reconnected {
+                // Drop the remaining per-gesture state regardless of whether a
+                // modifier was held (see the doc): an outstanding remapped
+                // key-down or a latch left by a Down whose Up never came.
+                self.remapped_keys.clear();
+                self.left_click_remapped = false;
+            }
+
+            // Only bother macOS when a modifier was actually released: our
+            // earlier FlagsChanged left the session state asserting it, and
+            // macOS derives press-vs-release from the flags diff, so one event
+            // carrying the now-empty set releases all of them.
+            if had_mods {
+                debug!(
+                    reason = if reconnected {
+                        "new connection"
+                    } else {
+                        "idle gap"
+                    },
+                    stuck_flags = format!("0x{stuck:08X}"),
+                    "clearing stale held modifiers"
+                );
+                self.post_flags_changed(VK_LCMD);
+            }
         }
 
         /// When auto-detecting (no explicit `--keyboard-layout`), (re)resolve
