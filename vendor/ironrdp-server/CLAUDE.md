@@ -5,6 +5,9 @@ Local fork of ironrdp-server 0.10.0, pulled in via `[patch.crates-io]` in
 (carved out of `dispatch_server_events`) is the live divergence. Keep this
 vendor dir until (2)/(3)/(4)/(5)/(6)/(8)/(9)/(10)/(11)/(12)/(13)/(14)/(15)/(16)/(18)/(19)/(20)/(21)/(22)/(23) below are upstreamed
 AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1c682 pin bump — see (7).)
+**(23) is now UPSTREAMED — Devolutions/IronRDP#1476 MERGED 2026-09-08 (`5198cde0`) — so it drops at the
+next pin bump; it is still listed above because the code is still IN this fork until that bump. Read (23)'s
+de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` and macrdp preempts unconditionally.**
 
 (1) The original "keep newest queued waves on per-batch overflow"
     direction-flip LANDED upstream (PR #1276, merged 2026-05-21) — do NOT
@@ -901,6 +904,20 @@ AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1
     ~60s after a de-migration (its multitransport dead-tunnel timeout on the now-silent
     UDP tunnel) — keepalive or cleanly close the abandoned tunnel on de-migrate.
 
+    **UPSTREAM PATH IN FLIGHT (2026-09-16).** glamberson's stacked PRs, all OPEN:
+    #1951 (server-side UDP multitransport bootstrapping) → #1953
+    (`accept_finalize_with_multitransport` driver) → #1954 (wires it into
+    `ironrdp-server` via `RdpServerBuilder::with_udp_transport`). Per #1954's
+    description it covers reliable-UDP EGFX migration via Soft-Sync with a TCP
+    fallback on setup failure. Differences from this divergence, as described: it
+    migrates EGFX automatically whenever UDP is configured, whereas macrdp keeps that
+    behind `--udp-migrate-egfx` (default off) because a reliable tunnel head-of-line
+    blocks under loss exactly like TCP; it mentions no recovery from a tunnel that
+    wedges mid-session (macrdp's watchdog de-migration + tunnel-death detection); it
+    has no lossy UDP audio (macrdp's DTLS path stays a divergence); and it has no
+    end-to-end UDP handshake test. If the stack merges, the reliable-EGFX half of
+    (12) may de-vendor at a bump; the rest stays.
+
 (13) Server Auto-Reconnect Cookie (MS-RDPBCGR ARC_SC_PRIVATE_PACKET) — NOT
     upstreamed; added 2026-07-02. `RdpServer` gains `auto_reconnect_cookie:
     Option<rdp::session_info::ServerAutoReconnect>` (default None) + a
@@ -1401,7 +1418,23 @@ AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1
     `--fork-workers` the verdict happens in a worker running with
     `connection_handler = None`, so the hook doesn't fire there (fork-workers
     keeps its exit-code-derived accept/disconnect audit); documented as a v1
-    boundary.
+    boundary. (`--fork-workers` was removed in v0.8.36, so that boundary no longer
+    applies.)
+
+    **UPSTREAM STATUS (2026-09-16).** Proposed as Devolutions/IronRDP#1484, which
+    asked whether an observation hook or `CredentialValidator` is the right seam.
+    glamberson replied 2026-09-05 that the design is settled (#1691's
+    `on_connection_info` covers the success boundary; `on_authenticated` covers the
+    failure-with-reason edge) and to file the patch — a peer's green light, not a
+    maintainer's. The held patch (IronRDP clone, branch
+    `feat/connection-handler-on-authenticated` @ `68fc3a7b`) is 392 commits stale
+    and conflicts: #1476 moved negotiation into `negotiate_and_authenticate`,
+    which takes no `&mut self`, so the hook must fire at its call sites.
+    **BLOCKED on Devolutions/IronRDP#1969:** upstream's `ConnectionPolicy::Preempt`
+    takes the handler out of `self` for the race, so a hook fired through
+    `self.connection_handler` is silently dead under `Preempt` — macrdp's only mode,
+    which would zero the `event="auth"` SIEM stream after a bump. Land the #1969
+    handler-sharing fix first, then this hook.
 
 (19) Server-direction MS-RDPECAM camera redirection — **COMPLETE; shipped in
     macrdp v0.9.0** (NOT upstreamed; added 2026-07-16 as a Phase-0 gate, finished
@@ -1657,9 +1690,99 @@ AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1
     divergence), after CBenoit independently flagged the bare TPKT-peek as
     unsafe (matching macrdp's 07-27 finding) and that peek shape was rejected.
     #1476 also adds the `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` + anti-storm
-    eviction notice macrdp ships. **OPEN, awaiting CBenoit's merge decision**
-    (issue #1483 is the backing RFC). When it merges + the pin bumps, macrdp
-    de-vendors this divergence.
+    eviction notice macrdp ships. **MERGED 2026-09-08 by CBenoit — merge commit
+    `5198cde0f73485f3fbd999ea7c49293c86b80387`** (issue #1483 is the backing
+    RFC; the prerequisite refactor PR #1588 was left OPEN and is now superseded,
+    its extraction having landed inside #1476). macrdp pins IronRDP by git rev,
+    so NO crates.io release is needed — any rev at-or-after `5198cde0` carries
+    it, and **this divergence drops at the next pin bump.**
+
+    **DE-VENDOR NOTE — READ BEFORE DELETING THIS DIVERGENCE. It is near-drop-in
+    but has ONE trap, and it is the #179 class (a pin bump regressing via a
+    divergence handled wrong at bump time).** Verified 2026-09-09 against the
+    merge commit: all five tunables are IDENTICAL to this fork's, constant for
+    constant — `EVICTION_GRACE` 750 ms, `REPREEMPT_COOLDOWN` 5 s,
+    `REPREEMPT_MAX_LOCKOUT` 30 s, `CANDIDATE_NEGOTIATION_TIMEOUT` 10 s,
+    `CANDIDATE_HANDOFF_GRACE` 750 ms — and every load-bearing fn is present
+    (`negotiate_candidate`, `serve_negotiated`, `negotiate_and_authenticate`,
+    plus the stale-event discard under upstream's name
+    `discard_stale_session_events` = this fork's
+    `discard_stale_eviction_events`). So the bump is an ADOPTION, not a re-port.
+
+    **API CHANGED AFTER THE MERGE — read this before trusting any older note.**
+    #1476 shipped a `preempt_existing_session: bool` option with a
+    `with_preempt_existing_session` builder method. Three days later
+    **Devolutions/IronRDP#1913** (@maryny4, merged 2026-09-11 by CBenoit, commit
+    `f7732a16`) REMOVED both and replaced them with an enum,
+    `ConnectionPolicy { Queue, Reject, Preempt }`, set via
+    **`RdpServerBuilder::with_connection_policy(ConnectionPolicy)`** (`#[must_use]`).
+    `Preempt` keeps #1476's full-auth gating and the five tunables above are
+    still identical — re-verified 2026-09-15 against both the merge commit and
+    current master. An earlier version of THIS note told you to add
+    `.with_preempt_existing_session(true)`; that method no longer exists.
+
+    **NOT PURELY DROP-IN — two behaviors differ, in opposite directions.**
+
+    (i) Something upstream does that this fork doesn't. Upstream's
+    `Preempt` (present since the #1476 merge, still on master) calls
+    `invalidate_auto_reconnect_cookie_on_eviction()` after an eviction, so the
+    evicted client can't silently reclaim via its ARC cookie. This fork has no
+    equivalent (0 references on main, checked 2026-09-15). The five constants and
+    four functions matching is necessary but not sufficient: adopting upstream
+    ADDS this at the bump. It's probably an improvement (it closes the ARC
+    fast-path back into an evicted slot, complementing the anti-storm window),
+    but it sits squarely on the reconnect path `REPREEMPT_MAX_LOCKOUT`'s headline
+    case depends on — a client whose link dropped, auto-reconnecting to reclaim
+    its own stale session. When the incumbent and the newcomer are the SAME
+    client, check that the invalidation targets the stale session's cookie and
+    not the winner's freshly issued one. Verify a live reclaim-after-link-drop at
+    the bump, not just the conn_test coverage.
+
+    (ii) **A bug upstream has that this fork already fixed — adopting upstream
+    re-introduces it.** Upstream's `Preempt` arm TAKES the handler for the race
+    (`let handler = self.connection_handler.take()`) before building the live
+    connection and only restores it afterwards. Every served connection then
+    reaches `client_accepted` with `self.connection_handler == None`, so any hook
+    fired through that field during the race is silently skipped — on upstream
+    master that means `on_connection_info` never fires under `Preempt`. This is
+    precisely the "first cut" failure divergence (22) above records, which this
+    fork fixed by sharing the handler as `Rc<RefCell<Box<dyn ConnectionHandler>>>`.
+    For macrdp the consequence at a naive bump is concrete: the audit hooks
+    (`on_authenticated` → `event="auth"`, `on_client_fingerprint` →
+    `event="fingerprint"`) go silent under `Preempt`, which is macrdp's only mode —
+    `scripts/test-audit-log.sh` is the CI test that catches it, the same way it
+    caught divergence (22) the first time. Do NOT de-vendor divergences (22)/(23)
+    onto an upstream that still `.take()`s the handler for the race: either the
+    upstream fix lands first, or this fork keeps its shared handler across the
+    bump. Found 2026-09-15 by static trace on upstream master `d2bb7376` while
+    porting the #1484 `on_authenticated` hook, then REPRODUCED 2026-09-16 with an
+    e2e test driving a real client through `RdpServer::run()` under each policy:
+    `Queue` and `Reject` pass, `Preempt` fails with `on_accept=true,
+    on_connection_info=false` (deterministic over repeated runs). Confirmed causal,
+    not just correlated: removing the `.take()` makes all three pass. It also
+    breaks upstream's own documented contract (`on_connection_info` "is called from
+    every code path that completes connection setup"). Filed upstream as
+    **Devolutions/IronRDP#1969** (2026-09-16) — check its status at the bump. Note
+    for whoever fixes it upstream: `RdpServer` is ALREADY `!Send` there (non-`Send`
+    sound/cliprdr/rdpei factories — verified with a compile-time assert), so this
+    fork's `Rc<RefCell<..>>` approach adds no new `Send` constraint.
+
+    THE TRAP (unchanged by #1913, only renamed): **the default is
+    `ConnectionPolicy::Queue`** (queue-behind — kept for compatibility; CBenoit's
+    09-08 question about what the default should ultimately be is still
+    unresolved in code), whereas THIS fork preempts **unconditionally** — there is
+    no option, which is why the builder chain in `src/main.rs` has no preemption
+    call at all. Deleting this divergence WITHOUT adding
+    **`.with_connection_policy(ConnectionPolicy::Preempt)`** to that chain
+    silently reverts second-client takeover to the pre-#174 hang, **with no
+    compile error to catch it** (the policy simply stays at its default). Same
+    failure class as #179, mirrored: there a stale divergence double-corrected,
+    here a missing call un-corrects. (If you instead copy the OLD method name
+    from a stale note, you get a compile error — the safe failure. Leaving the
+    call out entirely is the dangerous one.) Re-run the conn_test coverage
+    (`a_silent_candidate_cannot_wedge_the_accept_loop`,
+    `second_client_preempts_the_live_session`) after the bump, and re-verify a
+    real second-client takeover on a live client before cutting a release.
 
     **Eviction must tell the loser WHY, or the two clients ping-pong forever
     (2026-07-27, found in live testing of the above — the failure that made

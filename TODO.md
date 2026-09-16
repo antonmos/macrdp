@@ -7,6 +7,28 @@ then delete; promote a parked item to *In flight* when work actually starts.
 
 ## In flight (needs an action)
 
+- [ ] **Open PRs from @antonmos — review state (as of 2026-09-16).**
+  - **#183** `fix(input): held modifiers on mouse events + Ctrl+click→Cmd+click` — the blocker (a stuck
+    modifier poisoning every click for the process lifetime) is RESOLVED in `c8712e9` (connection-edge +
+    10 s idle resync, latched left-click remap, scroll modifiers, a 32-row decision-table test). One
+    follow-up requested (https://github.com/clintcan/macrdp/pull/183#issuecomment-5668215419): (1) the
+    "connection" reset also fires on every deactivation-reactivation (live resize, blank recovery),
+    because it's requested from `ScreenCaptureUpdates::start`; (2) the latch/`remapped_keys` survive a
+    reset when no modifier happens to be held; (3) a **pre-existing phantom drag, latent on `main` too** —
+    `left_down`/`right_down` live in the process-lifetime input handler and are only written by real
+    button events, so a disconnect mid-drag makes the next connection's moves post as
+    `LeftMouseDragged` until a click. Open design question when his fix returns: whether the reset
+    should also post a button-up to macOS (which could drop a mid-drag item where the cursor is).
+  - **#182** `fix(ironrdp-server): bound accept_finalize` — mechanism sound (the bound is on the inner
+    call; verified). Asked (https://github.com/clintcan/macrdp/pull/182#issuecomment-5646629705) for a
+    **per-step (no-progress) deadline** instead of a 30 s total budget — cheap, since
+    `ironrdp_async::single_sequence_step` and `Acceptor::get_result` are already public — with a
+    ship-now fallback (raise the default + `MACRDP_FINALIZE_TIMEOUT_SECS`). It claims vendored
+    divergence **(24)**, colliding with the mic branch: #182 keeps (24), the mic divergence becomes (25).
+  - **#181** (`--lock-on-disconnect`) and **#184** (Ctrl+, → Cmd+,) — not reviewed yet.
+  - Related: issue **#186** — `run_connection`'s `accept_begin`/TLS/CredSSP are unbounded pre-auth
+    awaits, the serving-path half that #182 doesn't cover.
+
 - [x] **SIEM/SOC audit forwarding — Tier 0 (structured JSON audit stream) — SHIPPED (v0.8.33);
   `event="auth"` (div18) + `event="fingerprint"` which-client (PR #163, 2026-07-18, merged, awaits
   next release) added since.** macrdp's `macrdp::audit`
@@ -613,6 +635,27 @@ then delete; promote a parked item to *In flight* when work actually starts.
 - **Printer redirection (RDPDR printer device).** Not implemented; no current demand.
 
 ## Upstreaming watch (no action unless a release lands)
+
+- **▶ UPDATE 2026-09-16 — supersedes the "ZERO open clintcan PRs" note below.** clintcan has 0 open
+  upstream PRs and 2 open issues (#1484, #1969). Detail: the `project_upstream_ironrdp_open_prs` memory
+  and the divergence notes in `vendor/ironrdp-server/CLAUDE.md`.
+  - **Divergence (23), second-client preemption, is upstream — with traps.** #1476 MERGED 2026-09-08;
+    #1913 MERGED 2026-09-11 replaced its bool with `ConnectionPolicy { Queue (default), Reject, Preempt }`
+    via `with_connection_policy`. The bump must add `.with_connection_policy(ConnectionPolicy::Preempt)`
+    or takeover silently reverts to the pre-#174 hang. Not drop-in: upstream also invalidates the ARC
+    cookie on eviction, and has the #1969 bug. #1483 CLOSED 2026-09-15 as resolved by #1476 + #1913.
+  - **#1969** (filed 2026-09-16, reproduced + confirmed causal): under `ConnectionPolicy::Preempt`,
+    `on_connection_info` never reaches the handler, because `run()` takes the handler out for the race.
+    **Blocks de-vendoring (22)/(23)** and upstreaming (18). Ships in `ironrdp-server` 0.14.0 unless fixed
+    (release PR #1880); #1934 proposes making preemption the default. Repro test is committed locally on
+    the IronRDP clone branch `repro/preempt-drops-handler-hooks` (not pushed).
+  - **Divergence (18), `on_authenticated`, → #1484.** glamberson green-lit filing the patch 2026-09-05 (a
+    peer, not a maintainer). The held patch is 392 commits stale and conflicts, and is **blocked on #1969**.
+  - **Overlapping upstream work to evaluate at the next bump:** divergence (12) multitransport ↔
+    glamberson's open stack #1951 → #1953 → #1954 (reliable-UDP EGFX only — no lossy audio, no
+    mid-session de-migration); the mic divergence (24→25) ↔ the `ironrdp-rdpeai` crate already on master
+    (#1645, 2026-08-12) plus #1946's `ironrdp-server` integration (open).
+  - Merged since the previous update: #1556, #1690, #1417, #1711, #1769, #1691.
 
 - IronRDP forks are effectively permanent (each carries un-upstreamed divergences:
   multitransport, rdpdr server-direction, smartcard, acceptor KLID+MT, audio-lag/resize/dispatch,
