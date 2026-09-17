@@ -1930,16 +1930,18 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
 (24) Server-direction MS-RDPEAI audio-input (microphone) redirection — the
     `AUDIO_INPUT` DVC.
 
-    ⚠️ **NUMBER COLLISION — RENUMBER THIS TO (25) BEFORE MERGING.** PR #182
-    (@antonmos, `fix(ironrdp-server): bound accept_finalize`) also claims (24),
-    for the `FINALIZE_TIMEOUT` bound. Neither exists on `main`, so both branches
-    saw (24) as free. #182 is review-ready while this branch still needs P3, so
-    **#182 lands first and keeps (24)** — this divergence becomes (25). Renumber
-    every reference (this heading, the header list at the top of this file, the
-    `(vendored, divergence 24)` markers in `src/audin.rs`, and any `div-24` in
-    TODO.md / memory) when rebasing onto a `main` that carries #182. Two (24)s in
-    this log is exactly the kind of divergence-bookkeeping slip that produced
-    #179 at pin-bump time. (Recorded 2026-09-12.)
+    ⚠️ **NUMBER COLLISION — RENUMBER THIS TO (26) BEFORE MERGING.** Three branches
+    claim (24): PR #183 (@antonmos, the per-served-connection input-reset handle),
+    PR #182 (@antonmos, the `FINALIZE_TIMEOUT` bound) and this one. None exists on
+    `main` yet. Decided 2026-09-17 by expected merge order: **#183 keeps (24)**
+    (closest to landing), **#182 takes (25)**, and **this divergence becomes (26)**.
+    Renumber every reference (this heading, the header list at the top of this
+    file, the `(vendored, divergence 24)` markers in `src/audin.rs`, and any
+    `div-24` in TODO.md / memory) when rebasing onto a `main` that carries both. If
+    the merge order changes, recount from `main` — the rule is simply the next free
+    number at merge time. Two divergences sharing a number is exactly the
+    bookkeeping slip that produced #179 at pin-bump time. (Recorded 2026-09-12;
+    revised 2026-09-17.)
 
     NOT upstreamed; added 2026-07-27. Began as the Phase 0 protocol gate; the
     processor now feeds a real sink — macrdp's P2 shared-memory ring into the

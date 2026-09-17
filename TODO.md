@@ -184,8 +184,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
       rather than the header; `WavDumpSink::on_format` doesn't finalize or reset on renegotiation; the 250 ms
       latency-skip threshold sits below the documented socket-stall magnitudes; `micfeed_test.c` still has the
       ftruncate-on-reuse bug the Rust side fixed. Full list in the `project_microphone_redirection` memory.
-    - [ ] Renumber vendored divergence (24) → (25) when rebasing onto a `main` that carries PR #182 (the marker
-      is at the divergence heading).
+    - [ ] Renumber vendored divergence (24) → (26) when rebasing onto a `main` that carries PRs #183 (keeps
+      (24)) and #182 (takes (25)); decided 2026-09-17, marker at the divergence heading.
     - [ ] Weigh the upstream overlap before merging: the `ironrdp-rdpeai` crate (Devolutions/IronRDP#1645) already
       provides `RdpeaiServer`, and #1946 (open) wires it into `ironrdp-server`. Adopting it may beat carrying
       `AudinServer` as a divergence.
