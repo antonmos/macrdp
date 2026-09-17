@@ -1804,7 +1804,7 @@ AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1
     still be served), verified to fail without the fix — it times out with
     "the loop never accepted it" — and pass with it.
 
-(24) `accept_finalize` is BOUNDED — an authenticated client that wedges
+(25) `accept_finalize` is BOUNDED — an authenticated client that wedges
     mid-handshake can no longer hold the live-session slot forever (NOT
     upstreamed; added 2026-09-02). The companion to (23)'s
     `CANDIDATE_NEGOTIATION_TIMEOUT` on the other half of the accept path: that

@@ -92,7 +92,7 @@ const CANDIDATE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// and simply reconnects; holding the whole listener for it is the worse trade.
 const CANDIDATE_HANDOFF_GRACE: Duration = Duration::from_millis(750);
 
-/// (vendored, divergence 24) How long ONE `accept_finalize` handshake pass gets
+/// (vendored, divergence 25) How long ONE `accept_finalize` handshake pass gets
 /// before the connection is dropped.
 ///
 /// The companion to `CANDIDATE_NEGOTIATION_TIMEOUT` on the other half of the
@@ -3857,7 +3857,7 @@ impl RdpServer {
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
         loop {
-            // (vendored, divergence 24) Bounded: see `FINALIZE_TIMEOUT`. An
+            // (vendored, divergence 25) Bounded: see `FINALIZE_TIMEOUT`. An
             // authenticated client that wedges mid-handshake used to park this
             // await forever and hold the live-session slot with it.
             let finalize = ironrdp_acceptor::accept_finalize(framed, &mut acceptor);

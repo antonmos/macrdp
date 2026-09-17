@@ -1172,7 +1172,7 @@ where
     Ok(tls_connector.connect(server_name, initial).await?)
 }
 
-/// (vendored, divergence 24) A client that authenticates and then goes silent
+/// (vendored, divergence 25) A client that authenticates and then goes silent
 /// mid-handshake must be dropped, not parked on forever.
 ///
 /// History (macrdp, 2026-09-02): Windows App for macOS build 68614
