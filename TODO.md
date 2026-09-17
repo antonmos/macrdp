@@ -8,9 +8,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
 ## In flight (needs an action)
 
 - [ ] **Open PRs from @antonmos — review state (as of 2026-09-17).**
-  - **Vendored divergence numbering (decided 2026-09-17):** three branches claim (24). By expected merge
-    order **#183 keeps (24)**, **#182 takes (25)**, the **mic divergence becomes (26)**. If the order
-    changes, take the next free number on `main` at merge time.
+  - **Vendored divergence numbering (revised 2026-09-17):** #182 is held for the pin bump and will never
+    land its divergence, so only two claimants remain: **#183 keeps (24)** and the **mic divergence takes
+    (25)**. If that changes, take the next free number on `main` at merge time.
   - **#183** `fix(input): held modifiers on mouse events + Ctrl+click→Cmd+click` — round 3 (`01e86a8`,
     verified against head `334cc3c75`, CI green) addressed all three follow-ups: the reset is now raised
     once per SERVED connection via a new vendored handle (**divergence (24)**,
@@ -26,8 +26,18 @@ then delete; promote a parked item to *In flight* when work actually starts.
     call; verified). Asked (https://github.com/clintcan/macrdp/pull/182#issuecomment-5646629705) for a
     **per-step (no-progress) deadline** instead of a 30 s total budget — cheap, since
     `ironrdp_async::single_sequence_step` and `Acceptor::get_result` are already public — with a
-    ship-now fallback (raise the default + `MACRDP_FINALIZE_TIMEOUT_SECS`). No reply yet. It claims vendored
-    divergence (24) and must renumber to **(25)** (see the numbering note above).
+    ship-now fallback (raise the default + `MACRDP_FINALIZE_TIMEOUT_SECS`).
+    **DISPOSITION 2026-09-17 — HOLD for the pin bump; don't reshape it, don't land the vendored form**
+    (https://github.com/clintcan/macrdp/pull/182#issuecomment-5722493925). The identical 30 s bound is
+    already upstream in **Devolutions/IronRDP#1890** (merged 2026-09-04, by @antonmos, same const, same
+    inner `accept_finalize` call), so the bump HARVESTS it and the divergence never has to exist. Exposure
+    until then is mild: macrdp preempts unconditionally and eviction isn't gated on the incumbent having
+    activated, so a finalize-wedged client is displaced by the next authenticated connection — a parked
+    slot, not a lockout. His log data also settled the "is 30 s too tight?" worry (the 12.55 s-CredSSP
+    cellular link's finalize was 0.53 s; finalize doesn't inherit CredSSP's round-trip cost). **Left OPEN
+    on purpose** — the PR holds the regression test and the wedge diagnosis, and doubles as the bump
+    reminder. **At the bump:** confirm upstream's bound arrives via the pin, and pick his
+    `a_client_that_wedges_during_finalize_is_dropped` test back up.
   - **#184** (Ctrl+, → Cmd+,) is **stacked on #183** — it contains #183's commits plus its own `2f61a34`.
     Review after #183 merges. **#181** (`--lock-on-disconnect`) — not reviewed yet.
   - Related: issue **#186** — `run_connection`'s `accept_begin`/TLS/CredSSP are unbounded pre-auth
@@ -657,7 +667,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
     peer, not a maintainer). The held patch is 392 commits stale and conflicts, and is **blocked on #1969**.
   - **Overlapping upstream work to evaluate at the next bump:** divergence (12) multitransport ↔
     glamberson's open stack #1951 → #1953 → #1954 (reliable-UDP EGFX only — no lossy audio, no
-    mid-session de-migration); the mic divergence (24→26) ↔ the `ironrdp-rdpeai` crate already on master
+    mid-session de-migration); the mic divergence (24→25) ↔ the `ironrdp-rdpeai` crate already on master
     (#1645, 2026-08-12) plus #1946's `ironrdp-server` integration (open).
   - Merged since the previous update: #1556, #1690, #1417, #1711, #1769, #1691.
 
