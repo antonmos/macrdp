@@ -7,25 +7,29 @@ then delete; promote a parked item to *In flight* when work actually starts.
 
 ## In flight (needs an action)
 
-- [ ] **Open PRs from @antonmos — review state (as of 2026-09-16).**
-  - **#183** `fix(input): held modifiers on mouse events + Ctrl+click→Cmd+click` — the blocker (a stuck
-    modifier poisoning every click for the process lifetime) is RESOLVED in `c8712e9` (connection-edge +
-    10 s idle resync, latched left-click remap, scroll modifiers, a 32-row decision-table test). One
-    follow-up requested (https://github.com/clintcan/macrdp/pull/183#issuecomment-5668215419): (1) the
-    "connection" reset also fires on every deactivation-reactivation (live resize, blank recovery),
-    because it's requested from `ScreenCaptureUpdates::start`; (2) the latch/`remapped_keys` survive a
-    reset when no modifier happens to be held; (3) a **pre-existing phantom drag, latent on `main` too** —
-    `left_down`/`right_down` live in the process-lifetime input handler and are only written by real
-    button events, so a disconnect mid-drag makes the next connection's moves post as
-    `LeftMouseDragged` until a click. Open design question when his fix returns: whether the reset
-    should also post a button-up to macOS (which could drop a mid-drag item where the cursor is).
+- [ ] **Open PRs from @antonmos — review state (as of 2026-09-17).**
+  - **Vendored divergence numbering (decided 2026-09-17):** three branches claim (24). By expected merge
+    order **#183 keeps (24)**, **#182 takes (25)**, the **mic divergence becomes (26)**. If the order
+    changes, take the next free number on `main` at merge time.
+  - **#183** `fix(input): held modifiers on mouse events + Ctrl+click→Cmd+click` — round 3 (`01e86a8`,
+    verified against head `334cc3c75`, CI green) addressed all three follow-ups: the reset is now raised
+    once per SERVED connection via a new vendored handle (**divergence (24)**,
+    `RdpServer::set_input_reset_handle`, raised at the top of `run_connection`/`serve_negotiated`, not
+    `on_accept`); the latch and `remapped_keys` clear unconditionally on reconnect; held buttons are
+    released on reconnect, and the idle gap clears modifiers only. Remaining asks: (1) the synthetic
+    button-up is posted at the **pre-disconnect** cursor position on the new connection's first input
+    (a keystroke counts), so an interrupted Finder drag completes as a drop there — possibly into a folder
+    or onto the Trash. His reason for posting it is sound (otherwise macOS stays mid-drag and the next click
+    sends a second press with no release) — document the trade-off and live-test a real file drag;
+    (2) `01e86a8` adds no tests for the connection-edge path (suite still 208).
   - **#182** `fix(ironrdp-server): bound accept_finalize` — mechanism sound (the bound is on the inner
     call; verified). Asked (https://github.com/clintcan/macrdp/pull/182#issuecomment-5646629705) for a
     **per-step (no-progress) deadline** instead of a 30 s total budget — cheap, since
     `ironrdp_async::single_sequence_step` and `Acceptor::get_result` are already public — with a
-    ship-now fallback (raise the default + `MACRDP_FINALIZE_TIMEOUT_SECS`). It claims vendored
-    divergence **(24)**, colliding with the mic branch: #182 keeps (24), the mic divergence becomes (25).
-  - **#181** (`--lock-on-disconnect`) and **#184** (Ctrl+, → Cmd+,) — not reviewed yet.
+    ship-now fallback (raise the default + `MACRDP_FINALIZE_TIMEOUT_SECS`). No reply yet. It claims vendored
+    divergence (24) and must renumber to **(25)** (see the numbering note above).
+  - **#184** (Ctrl+, → Cmd+,) is **stacked on #183** — it contains #183's commits plus its own `2f61a34`.
+    Review after #183 merges. **#181** (`--lock-on-disconnect`) — not reviewed yet.
   - Related: issue **#186** — `run_connection`'s `accept_begin`/TLS/CredSSP are unbounded pre-auth
     awaits, the serving-path half that #182 doesn't cover.
 
@@ -653,7 +657,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
     peer, not a maintainer). The held patch is 392 commits stale and conflicts, and is **blocked on #1969**.
   - **Overlapping upstream work to evaluate at the next bump:** divergence (12) multitransport ↔
     glamberson's open stack #1951 → #1953 → #1954 (reliable-UDP EGFX only — no lossy audio, no
-    mid-session de-migration); the mic divergence (24→25) ↔ the `ironrdp-rdpeai` crate already on master
+    mid-session de-migration); the mic divergence (24→26) ↔ the `ironrdp-rdpeai` crate already on master
     (#1645, 2026-08-12) plus #1946's `ironrdp-server` integration (open).
   - Merged since the previous update: #1556, #1690, #1417, #1711, #1769, #1691.
 
