@@ -1930,18 +1930,18 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
 (24) Server-direction MS-RDPEAI audio-input (microphone) redirection — the
     `AUDIO_INPUT` DVC.
 
-    ⚠️ **NUMBER COLLISION — RENUMBER THIS TO (26) BEFORE MERGING.** Three branches
-    claim (24): PR #183 (@antonmos, the per-served-connection input-reset handle),
-    PR #182 (@antonmos, the `FINALIZE_TIMEOUT` bound) and this one. None exists on
-    `main` yet. Decided 2026-09-17 by expected merge order: **#183 keeps (24)**
-    (closest to landing), **#182 takes (25)**, and **this divergence becomes (26)**.
-    Renumber every reference (this heading, the header list at the top of this
-    file, the `(vendored, divergence 24)` markers in `src/audin.rs`, and any
-    `div-24` in TODO.md / memory) when rebasing onto a `main` that carries both. If
-    the merge order changes, recount from `main` — the rule is simply the next free
-    number at merge time. Two divergences sharing a number is exactly the
-    bookkeeping slip that produced #179 at pin-bump time. (Recorded 2026-09-12;
-    revised 2026-09-17.)
+    ⚠️ **NUMBER COLLISION — RENUMBER THIS TO (25) BEFORE MERGING.** PR #183
+    (@antonmos, the per-served-connection input-reset handle) also claims (24) and
+    **keeps it** — it is closest to landing. PR #182 claimed (24) too, but was
+    **held for the pin bump on 2026-09-17** (the identical bound is already upstream
+    in Devolutions/IronRDP#1890, so macrdp harvests it and that divergence never
+    lands), which frees (25) for this one. Renumber every reference (this heading,
+    the header list at the top of this file, the `(vendored, divergence 24)` markers
+    in `src/audin.rs`, and any `div-24` in TODO.md / memory) when rebasing onto a
+    `main` that carries #183. If the order changes, recount from `main` — the rule is
+    simply the next free number at merge time. Two divergences sharing a number is
+    exactly the bookkeeping slip that produced #179 at pin-bump time. (Recorded
+    2026-09-12; revised 2026-09-17.)
 
     NOT upstreamed; added 2026-07-27. Began as the Phase 0 protocol gate; the
     processor now feeds a real sink — macrdp's P2 shared-memory ring into the
