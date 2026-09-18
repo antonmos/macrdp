@@ -4,6 +4,19 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/clintcan/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.7 — dependency & security patch: rustls, cryptoki, h2
+
+A patch over v0.9.6 that carries **three security advisories** out of the dependency tree, plus one user-visible UI change. **No change to the default runtime path** beyond the dependency updates themselves.
+
+- **Security: `rustls` 0.23.40 → 0.23.45 (RUSTSEC-2026-0285).** Rustls accepted TLS 1.3 handshake messages sent at the wrong encryption level — for example a plaintext `EncryptedExtensions` packed into the same record as the `ServerHello` — where RFC 8446 §5.1 requires terminating with an `unexpected_message` alert. The handshake transcript is still authenticated, so a network-position attacker **cannot** alter or complete a handshake; the practical effect is that a peer could send in plaintext what should have been encrypted without rustls rejecting the connection. This is macrdp's own TLS stack (every client connection terminates here), which is why it's the headline of this release. Functionally the same bug as Go's CVE-2025-61730.
+- **Security: `cryptoki` 0.12.0 → 0.12.1 (RUSTSEC-2026-0286).** `cryptoki` treated the `CKA_ALLOWED_MECHANISMS` `ulValueLen` **byte** count as a `CK_MECHANISM_TYPE` **element** count, so a valid non-empty attribute returned through the safe `Session::get_attributes` API could construct an out-of-bounds slice — a crash, or disclosure of adjacent heap words. Reaches macrdp transitively through `sspi` → `ironrdp-connector`.
+- **Security: `h2` 0.4.14 → 0.4.16 (RUSTSEC-2026-0258).**
+- **Housekeeping: `chacha20` 0.10.1 → 0.10.2.** 0.10.0 and 0.10.1 were **yanked** — not for a vulnerability, but for a correctness bug (an SSE4.1 intrinsic used in the SSE2 backend of the RNG and legacy 64-bit-counter variants, RustCrypto/stream-ciphers#580). The failure mode is an illegal instruction on an x86 CPU with SSE2 but without SSE4.1, so macrdp's exposure was nil — Apple Silicon never compiles those backends and every Intel Mac has SSE4.1 — but a yanked crate in the lockfile is a supply-chain signal worth clearing.
+- **Consequential updates** pulled in by the rustls bump, all in the crypto provider beneath it: `aws-lc-rs` 1.16.3 → 1.18.1, `aws-lc-sys` 0.40.0 → 0.45.0, `rustls-webpki` 0.103.13 → 0.103.15.
+- **The app-switcher HUD now looks like the native Cmd+Tab switcher (#185, @antonmos).** The `--app-switcher-hud` overlay — the switcher macrdp draws so the RDP client can see it — moves from its first-cut "spike" look to the system style: a light translucent slab (`.popover` material forced vibrant-light, continuous 28 px corner, hairline border), bigger icons that scale to fit the display (144 px for a few apps, shrinking to stay within ~80 % of the display width, floored at 32 px), and a subtler selected-icon ring. Opt-in as before; nothing changes unless `--app-switcher-hud` is passed.
+
+Each dependency fix was verified against the CI-pinned `cargo-deny` on both invocations the workflow runs (the root tree and the standalone vendored `ironrdp-rdpeudp` lock), and the daily scheduled scan is green again after being red 2026-09-15 → 09-17.
+
 ## v0.9.6 — bug-fix patch: scroll-down regression + an unauthenticated accept-loop DoS
 
 A bug-fix patch over v0.9.5, both fixes from @antonmos. It corrects **two things that shipped broken**: a scroll regression introduced by the v0.9.5 pin bump, and an unauthenticated remote DoS in the second-client-preemption path latent since v0.9.3.
