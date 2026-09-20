@@ -45,6 +45,32 @@ are scope limits, not gaps to close.
    Gateway), and reinforced by a **Network exposure** note next to the LAN-bind examples in
    **§Examples**. See also `@docs/macos-gotchas.md` (port 3389 privileged → 3390 default).
 
+4. **Repository + CI supply-chain hardening — DONE (2026-09-20).** The workflows in
+   `.github/` are the highest-value tampering target in the repo: once on `main` they run
+   with repository secrets and a write-scoped token. The posture, in the order that actually
+   matters:
+   - **Only the owner has write access.** Every contributor PR arrives from a fork, so nobody
+     else can *change* a workflow — only propose one. The realistic risk is therefore not an
+     outside contributor but a workflow edit riding along unnoticed inside a large diff and
+     being merged.
+   - **`.github/CODEOWNERS` + "require review from Code Owners"** on `main` turns exactly that
+     into an explicit step: a PR touching `.github/` auto-requests the owner's review and
+     cannot be merged without it.
+   - **Fork-PR workflow runs require approval for *all* outside collaborators** (was
+     first-time contributors only, so a repeat contributor's PR ran CI automatically).
+   - **SHA pinning is enforced** (`sha_pinning_required`). Every action was already pinned to a
+     full commit SHA with a version comment; the setting stops a future PR quietly swapping one
+     for a mutable tag.
+   Already true, and worth not re-deriving: **`GITHUB_TOKEN` cannot modify
+   `.github/workflows/`** at all (GitHub withholds the `workflow` scope from it, so no
+   compromised action can rewrite CI); **fork PRs get no secrets and a read-only token** on
+   `pull_request`; all three workflows declare `permissions: contents: read`; and none uses
+   **`pull_request_target`**, the trigger that *does* expose secrets to fork code. The
+   *dependency* half is the daily `cargo-deny` scan in `security.yml`.
+   Not done, deliberately: narrowing `allowed_actions` from `all` to an allowlist (upkeep vs.
+   benefit), and required status checks — a PR can still be merged red, which is tolerable
+   while the owner is the only merger.
+
 ## Tier 2 — Reliability / unattended operation
 
 4. **A real multi-day soak.** *(highest confidence per hour.)* The biggest unknown for
