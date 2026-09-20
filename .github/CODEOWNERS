@@ -1,0 +1,19 @@
+# macrdp code owners.
+#
+# Paths listed here auto-request a review from the owner on every PR that
+# touches them and — with "Require review from Code Owners" enabled in the
+# main-branch protection — cannot be merged without that approval.
+#
+# The point is the CI/automation directory. Once on `main`, these workflows run
+# with repository secrets and a write-scoped token, which makes them the
+# highest-value tampering target in the repo; the risk is not an outside
+# contributor changing them (nobody but the owner has write access) but a
+# workflow edit riding along unnoticed inside a large PR diff. An explicit
+# owner approval makes that impossible to miss.
+#
+# Two protections already exist and are NOT what this file adds:
+#   - GITHUB_TOKEN cannot modify .github/workflows/ at all — GitHub withholds
+#     the `workflow` scope from it, so no compromised action can rewrite CI.
+#   - Fork pull requests run with a read-only token and no access to secrets.
+
+/.github/ @clintcan
