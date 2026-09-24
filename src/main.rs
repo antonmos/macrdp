@@ -392,6 +392,24 @@ struct Args {
     #[arg(long)]
     lock_on_disconnect: bool,
 
+    /// EXPERIMENTAL, opt-in. Type the account password into the lock screen
+    /// when an RDP client connects while the local session is locked — any
+    /// lock, any cause (a --lock-on-disconnect lock, one set manually, or
+    /// macOS's own idle policy), not just one this project set. Off unless
+    /// passed (config AUTO_UNLOCK=1); a no-op when the screen isn't locked,
+    /// and skipped entirely under --skip-auth (where the password was never
+    /// PAM-validated). Off by default because the effect lands on the
+    /// PHYSICAL machine: once it fires, anyone standing at that Mac has a
+    /// live desktop, and it undoes a lock it did not set — someone may have
+    /// locked it deliberately. Reuses the same credential PAM already
+    /// validated at startup, so no fresh keychain read. Verified on one
+    /// machine, one macOS version, one keyboard layout; rests on typing
+    /// real keycode events into a secure field, a private lock-state check,
+    /// and a behavior (synthetic input reaching the lock screen) Apple could
+    /// change. See docs/known-quirks.md. macOS-only.
+    #[arg(long)]
+    auto_unlock: bool,
+
     /// Expose a loopback (127.0.0.1) read-only live-telemetry endpoint for the
     /// menu-bar controller's Status pane (bitrate/RTT/fps). Default off. No disk
     /// writes. macOS-only concern but cross-platform code.
@@ -1250,32 +1268,105 @@ fn lock_session() -> bool {
     false
 }
 
-/// Pure parse for the `MACRDP_AUTO_UNLOCK` escape hatch — default ON (no
-/// flag/config surface by design; see the auto-unlock note below), so this
-/// only needs to recognize an explicit disable.
-fn auto_unlock_enabled(env_override: Option<&str>) -> bool {
-    !matches!(
-        env_override
-            .map(|s| s.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("0") | Some("off") | Some("false") | Some("no")
-    )
+/// Best-effort check of whether this account's "require password after
+/// sleep or screen saver begins" delay is set to Immediately —
+/// `--lock-on-disconnect`'s `open ScreenSaverEngine.app` is only a true,
+/// password-required lock under that setting; otherwise it just starts the
+/// screen saver, so the flag's name would silently overpromise. Returns
+/// `None` when the check itself couldn't be run (parse the output loosely
+/// rather than fail the whole startup over a diagnostic). macrdp
+/// deliberately does not check or change this setting on its own — see
+/// docs/known-quirks.md.
+#[cfg(target_os = "macos")]
+fn screen_lock_delay_is_immediate() -> Option<bool> {
+    let output = std::process::Command::new("/usr/sbin/sysadminctl")
+        .args(["-screenLock", "status"])
+        .output()
+        .ok()?;
+    // sysadminctl logs its answer to stderr via NSLog, e.g. "screenLock
+    // delay is immediate" or "screenLock delay is N seconds" — match
+    // loosely rather than parse a brittle exact format.
+    let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase()
+        + &String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    if !output.status.success() || text.trim().is_empty() {
+        return None;
+    }
+    Some(text.contains("immediate"))
+}
+#[cfg(not(target_os = "macos"))]
+fn screen_lock_delay_is_immediate() -> Option<bool> {
+    None
 }
 
-/// Consecutive auto-unlock failures for the CURRENT lock (reset to 0 on a
-/// success). Capped at 2 — see the reasoning in docs/known-quirks.md: a
-/// failure here is far more likely a wake/timing mechanical issue than a
-/// wrong password (the password is the same one PAM already validated at
-/// startup and every connecting RDP client has proven knowledge of via
-/// CredSSP), so one retry is worth allowing — but macOS's PAM throttle
-/// counts failed submissions regardless of cause, and gives only 3 free
-/// attempts before an escalating delay, so 2 stays inside that margin
-/// rather than risking real lockout escalation from a stuck bug.
-static AUTO_UNLOCK_FAILURES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-const AUTO_UNLOCK_MAX_CONSECUTIVE_FAILURES: u32 = 2;
+/// Total Return-keypress SUBMISSIONS sent while trying to auto-unlock the
+/// CURRENT lock cycle — reset to 0 the moment the screen is observed
+/// unlocked (a fresh lock cycle starts with a fresh budget) and on a
+/// successful unlock. This tracks actual submissions, NOT calls to
+/// [`attempt_auto_unlock`]: a single call's internal Return-retry loop
+/// draws from this same shared pool as every other call for this lock and
+/// stops the instant the pool is empty, rather than each call getting its
+/// own private allowance of retries. That distinction is load-bearing — see
+/// [`AUTO_UNLOCK_MAX_SUBMISSIONS`].
+static AUTO_UNLOCK_SUBMISSIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Whether the "gave up" alert has already fired for the current lock cycle
+/// (reset alongside [`AUTO_UNLOCK_SUBMISSIONS`]) — so a client that keeps
+/// reconnecting after the budget is spent gets one loud alert, not one per
+/// reconnect.
+static AUTO_UNLOCK_GAVE_UP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Every Return pressed while the correct password sits in a secure field is
+/// potentially scored by macOS's PAM/OpenDirectory throttle as a real
+/// authentication attempt — indistinguishable, from the outside, from "the
+/// field wasn't focused yet and ignored it" (both leave the screen locked).
+/// Capped at 2: a failure here is far more likely a wake/timing mechanical
+/// issue than a wrong password (the password is the same one PAM already
+/// validated at startup and every connecting RDP client has proven
+/// knowledge of via CredSSP), so one retry is worth allowing — but macOS's
+/// PAM throttle gives only 3 free attempts before an escalating delay, so 2
+/// stays inside that margin rather than risking real lockout escalation
+/// from a stuck bug. **This must cap actual submissions, not calls** — an
+/// earlier version capped calls to [`attempt_auto_unlock`] while each call
+/// internally retried Return up to 3 times, so two calls could submit up to
+/// 6 times against a comment promising fewer than 3.
+const AUTO_UNLOCK_MAX_SUBMISSIONS: u32 = 2;
 // Compile-time guarantee that the cap above never regresses past macOS's
 // 3-free-attempts PAM/OpenDirectory throttle margin.
-const _: () = assert!(AUTO_UNLOCK_MAX_CONSECUTIVE_FAILURES < 3);
+const _: () = assert!(AUTO_UNLOCK_MAX_SUBMISSIONS < 3);
+
+/// Try to reserve one submission from a budget of `max`, tracked by
+/// `counter`. Returns `true` if the caller may proceed (and the reservation
+/// is already recorded), `false` if `max` submissions are already spent.
+/// Pure and independent of which atomic is passed in, so it's unit-testable
+/// without touching the real shared [`AUTO_UNLOCK_SUBMISSIONS`] counter.
+fn try_reserve_submission(counter: &std::sync::atomic::AtomicU32, max: u32) -> bool {
+    counter
+        .fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |n| (n < max).then_some(n + 1),
+        )
+        .is_ok()
+}
+
+/// Outcome of one [`attempt_auto_unlock`] call.
+enum AutoUnlockOutcome {
+    /// The screen wasn't locked (or, on non-macOS, locking doesn't apply
+    /// here) — nothing was attempted, and the per-lock budget/alert state
+    /// was reset since a lock cycle boundary was just observed.
+    NotLocked,
+    /// A password was submitted and the screen is now unlocked.
+    Unlocked,
+    /// Nothing was typed because doing so wasn't safe right now (Caps Lock
+    /// is on, the active layout can't produce every character, or the
+    /// layout couldn't be read) — no submission was spent, so the next
+    /// reconnect simply tries again.
+    SkippedUnsafe,
+    /// The shared submission budget for this lock is exhausted (by this
+    /// call, or an earlier one) — no further Return presses will be sent
+    /// until the lock cycle resets (screen observed unlocked) or macrdp
+    /// restarts.
+    BudgetExhausted,
+}
 
 /// Best-effort, loud alert that auto-unlock has given up for this lock —
 /// deliberately NOT just a log line, since this is exactly the moment the
@@ -1329,25 +1420,68 @@ fn alert_auto_unlock_gave_up() {}
 ///    keyboard sends, and what the original successful manual test used)
 ///    make the field accept a submit.
 #[cfg(target_os = "macos")]
-fn attempt_auto_unlock(password: &str) -> bool {
+fn attempt_auto_unlock(password: &str) -> AutoUnlockOutcome {
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGEventType};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+    // `CGEventSourceFlagsState` isn't wrapped by the `core-graphics` crate,
+    // so declare it directly — same pattern the project already uses for
+    // small FFI surfaces (see input.rs's ApplicationServices AX block).
+    // `CGEventSourceStateID`/`CGEventFlags` are both `#[repr(C)]`/bitflags
+    // types the crate itself passes across this exact boundary (see
+    // `CGEventSourceCreate`/`CGEventGetFlags`), so they're safe to reuse
+    // here as the parameter/return types.
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceFlagsState(state_id: CGEventSourceStateID) -> CGEventFlags;
+    }
 
     // macOS virtual keycode for Return (matches the constant already named
     // in the keyboard-layout translation notes in known-quirks.md).
     const VK_RETURN: u16 = 0x24;
 
     if !virtual_display::screen_is_locked() {
-        return true;
+        // Not locked — this is a lock-cycle boundary. Clear the shared
+        // submission/alert state so the NEXT lock starts with a full budget
+        // rather than inheriting whatever a previous, unrelated lock spent.
+        use std::sync::atomic::Ordering as AtomicOrdering;
+        AUTO_UNLOCK_SUBMISSIONS.store(0, AtomicOrdering::SeqCst);
+        AUTO_UNLOCK_GAVE_UP.store(false, AtomicOrdering::SeqCst);
+        return AutoUnlockOutcome::NotLocked;
+    }
+    // The submission budget is shared across every call for this lock (see
+    // AUTO_UNLOCK_SUBMISSIONS's docs) — if an earlier call already spent it,
+    // don't even wake/type; there is nothing left to safely submit with.
+    if AUTO_UNLOCK_SUBMISSIONS.load(std::sync::atomic::Ordering::SeqCst)
+        >= AUTO_UNLOCK_MAX_SUBMISSIONS
+    {
+        return AutoUnlockOutcome::BudgetExhausted;
+    }
+    // Caps Lock inverts letter case; `reverse_map` below always resolves
+    // assuming Caps is OFF, and whether a posted synthetic CGEvent honors or
+    // ignores the Mac's hardware Caps Lock state is unconfirmed (flagged in
+    // review; verifying it needs the live rig). Rather than gamble on which
+    // way that resolves and possibly submit an inverted-case password, skip
+    // the attempt entirely while Caps Lock is on — this check runs before
+    // anything is typed, so no submission budget is spent, and the next
+    // reconnect tries again for free once Caps Lock is off.
+    let caps_lock_on = unsafe { CGEventSourceFlagsState(CGEventSourceStateID::HIDSystemState) }
+        .contains(CGEventFlags::CGEventFlagAlphaShift);
+    if caps_lock_on {
+        warn!(
+            "auto-unlock: Caps Lock is on — skipping the attempt rather than \
+             risking an inverted-case password"
+        );
+        return AutoUnlockOutcome::SkippedUnsafe;
     }
     let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else {
         warn!("auto-unlock: CGEventSource::new failed");
-        return false;
+        return AutoUnlockOutcome::SkippedUnsafe;
     };
     // Modifier state has to be posted on both sources — see `post_flags` below.
     let Ok(source_hid) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
         warn!("auto-unlock: CGEventSource::new (HID) failed");
-        return false;
+        return AutoUnlockOutcome::SkippedUnsafe;
     };
 
     // Resolve EVERY character to a real keystroke before typing anything —
@@ -1356,7 +1490,7 @@ fn attempt_auto_unlock(password: &str) -> bool {
     // would shake the field and burn one of macOS's 3 free PAM attempts).
     let Some(mut layout) = keyboard_layout::KeyboardLayout::current() else {
         warn!("auto-unlock: could not read the Mac's active keyboard layout — skipping");
-        return false;
+        return AutoUnlockOutcome::SkippedUnsafe;
     };
     let map = layout.reverse_map();
     let mut plan: Vec<(u16, bool, bool)> = Vec::with_capacity(password.len());
@@ -1368,7 +1502,7 @@ fn attempt_auto_unlock(password: &str) -> bool {
                  active keyboard layout — skipping the attempt rather than \
                  submitting an incomplete password"
             );
-            return false;
+            return AutoUnlockOutcome::SkippedUnsafe;
         };
         plan.push(keystroke);
     }
@@ -1473,10 +1607,25 @@ fn attempt_auto_unlock(password: &str) -> bool {
     // waiting out the rest of the budget. Same backoff-retry shape already
     // used for exactly this class of "helper/field needs more time"
     // flakiness in ShieldedPrimary::install's SHOW_BACKOFF_MS loop.
-    const RETURN_ATTEMPTS: u32 = 3;
+    //
+    // Each Return below is a genuine PAM submission from the OS's point of
+    // view — the loop cannot tell "ignored" from "submitted and rejected"
+    // apart, both leave the screen locked — so every iteration reserves one
+    // unit from the SHARED per-lock budget before pressing anything, and
+    // stops the moment that budget (spent by this call or an earlier one)
+    // is empty, rather than always spending its own private allowance of
+    // retries. That is what keeps the total across every call for this lock
+    // under AUTO_UNLOCK_MAX_SUBMISSIONS.
     const RETURN_ATTEMPT_BUDGET: std::time::Duration = std::time::Duration::from_millis(400);
     const UNLOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
-    for attempt in 1..=RETURN_ATTEMPTS {
+    loop {
+        if !try_reserve_submission(&AUTO_UNLOCK_SUBMISSIONS, AUTO_UNLOCK_MAX_SUBMISSIONS) {
+            tracing::debug!(
+                "auto-unlock: submission budget exhausted — stopping without a \
+                 further Return"
+            );
+            return AutoUnlockOutcome::BudgetExhausted;
+        }
         if let Ok(down) = CGEvent::new_keyboard_event(source.clone(), VK_RETURN, true) {
             down.post(CGEventTapLocation::HID);
         }
@@ -1486,25 +1635,22 @@ fn attempt_auto_unlock(password: &str) -> bool {
         let deadline = std::time::Instant::now() + RETURN_ATTEMPT_BUDGET;
         loop {
             if !virtual_display::screen_is_locked() {
-                return true;
+                use std::sync::atomic::Ordering as AtomicOrdering;
+                AUTO_UNLOCK_SUBMISSIONS.store(0, AtomicOrdering::SeqCst);
+                AUTO_UNLOCK_GAVE_UP.store(false, AtomicOrdering::SeqCst);
+                return AutoUnlockOutcome::Unlocked;
             }
             if std::time::Instant::now() >= deadline {
                 break;
             }
             std::thread::sleep(UNLOCK_POLL_INTERVAL);
         }
-        if attempt < RETURN_ATTEMPTS {
-            tracing::debug!(
-                attempt,
-                "auto-unlock: Return not acknowledged yet — retrying"
-            );
-        }
+        tracing::debug!("auto-unlock: Return not acknowledged yet — retrying");
     }
-    false
 }
 #[cfg(not(target_os = "macos"))]
-fn attempt_auto_unlock(_password: &str) -> bool {
-    true
+fn attempt_auto_unlock(_password: &str) -> AutoUnlockOutcome {
+    AutoUnlockOutcome::NotLocked
 }
 
 /// Exit code used when a stuck `--detach-primary` disconnect bounces the process
@@ -1553,9 +1699,9 @@ fn spawn_primary_overlay_watcher<T: Send + 'static>(
     // last-client-disconnect (after an extra safety buffer beyond the
     // REACTIVATION_GRACE poll above). No-op otherwise.
     lock_on_disconnect: bool,
-    // Auto-unlock on reconnect (always-on default behavior, not a flag —
-    // see the MACRDP_AUTO_UNLOCK escape hatch). The exact same validated
-    // credential used for RDP auth; a no-op if the screen isn't locked.
+    // (--auto-unlock) When true, try to unlock the local session on
+    // reconnect using the exact same validated credential used for RDP
+    // auth. A no-op if the screen isn't locked.
     password: Arc<Zeroizing<String>>,
     auto_unlock: bool,
 ) {
@@ -1648,41 +1794,39 @@ fn spawn_primary_overlay_watcher<T: Send + 'static>(
                                 let password = Arc::clone(&password);
                                 std::thread::spawn(move || {
                                     use std::sync::atomic::Ordering as AtomicOrdering;
-                                    if AUTO_UNLOCK_FAILURES.load(AtomicOrdering::SeqCst)
-                                        >= AUTO_UNLOCK_MAX_CONSECUTIVE_FAILURES
-                                    {
-                                        return;
-                                    }
-                                    if attempt_auto_unlock(password.as_str()) {
-                                        let prev =
-                                            AUTO_UNLOCK_FAILURES.swap(0, AtomicOrdering::SeqCst);
-                                        if prev > 0 {
+                                    match attempt_auto_unlock(password.as_str()) {
+                                        AutoUnlockOutcome::NotLocked
+                                        | AutoUnlockOutcome::SkippedUnsafe => {}
+                                        AutoUnlockOutcome::Unlocked => {
                                             info!(label, "auto-unlock: succeeded");
                                         }
-                                        return;
-                                    }
-                                    let failures = AUTO_UNLOCK_FAILURES
-                                        .fetch_add(1, AtomicOrdering::SeqCst)
-                                        + 1;
-                                    warn!(
-                                        label,
-                                        failures,
-                                        "auto-unlock: attempt did not unlock the screen \
-                                         — likely a wake/timing issue rather than a \
-                                         wrong password (the same credential was \
-                                         already validated by PAM and by this \
-                                         connection's own RDP auth)"
-                                    );
-                                    if failures >= AUTO_UNLOCK_MAX_CONSECUTIVE_FAILURES {
-                                        error!(
-                                            label,
-                                            "auto-unlock: {failures} consecutive \
-                                             failures — giving up until the next \
-                                             successful unlock or a macrdp restart, \
-                                             to avoid tripping macOS's password-retry \
-                                             lockout"
-                                        );
-                                        alert_auto_unlock_gave_up();
+                                        AutoUnlockOutcome::BudgetExhausted => {
+                                            // Fire the loud alert exactly once per lock
+                                            // cycle — a client that keeps reconnecting
+                                            // while still locked and out of budget would
+                                            // otherwise re-trigger it on every attempt.
+                                            if !AUTO_UNLOCK_GAVE_UP
+                                                .swap(true, AtomicOrdering::SeqCst)
+                                            {
+                                                error!(
+                                                    label,
+                                                    max = AUTO_UNLOCK_MAX_SUBMISSIONS,
+                                                    "auto-unlock: exhausted its submission \
+                                                     budget for this lock without \
+                                                     unlocking the screen — giving up \
+                                                     until it's unlocked another way (or \
+                                                     macrdp restarts), to avoid tripping \
+                                                     macOS's password-retry lockout"
+                                                );
+                                                alert_auto_unlock_gave_up();
+                                            } else {
+                                                warn!(
+                                                    label,
+                                                    "auto-unlock: still locked and out of \
+                                                     submission budget for this lock"
+                                                );
+                                            }
+                                        }
                                     }
                                 });
                             }
@@ -2018,6 +2162,9 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("LOCK_ON_DISCONNECT", false) {
         argv.push("--lock-on-disconnect".into());
     }
+    if on("AUTO_UNLOCK", false) {
+        argv.push("--auto-unlock".into());
+    }
     if on("STATS_ENDPOINT", false) {
         argv.push("--stats-endpoint".into());
     }
@@ -2217,10 +2364,6 @@ fn args_from_config(path: &Path) -> Result<Args> {
             "LOCK_ON_DISCONNECT_DELAY_MS",
             "MACRDP_LOCK_ON_DISCONNECT_DELAY_MS",
         ),
-        // Low-visibility escape hatch for the always-on reconnect auto-unlock
-        // (paired with --lock-on-disconnect, but active independently of it).
-        // Env-read at the reconnect edge via auto_unlock_enabled().
-        ("AUTO_UNLOCK", "MACRDP_AUTO_UNLOCK"),
         // Loopback live-telemetry endpoint port (--stats-endpoint). Read via
         // getenv() in stats::default_port(); bridged like the USB/camera knobs
         // above so STATS_PORT can be set from config.env.
@@ -2412,6 +2555,28 @@ async fn async_main() -> Result<()> {
              ignoring"
         );
     }
+    if args.lock_on_disconnect {
+        match screen_lock_delay_is_immediate() {
+            Some(false) => warn!(
+                "--lock-on-disconnect is set, but this account's \"require \
+                 password after sleep or screen saver begins\" delay is not \
+                 Immediately — `open ScreenSaverEngine.app` will start the \
+                 screen saver without actually requiring a password to get \
+                 back in, so the Mac won't really be locked. Set it with \
+                 System Settings, or `sudo sysadminctl -screenLock \
+                 immediate -password <password>`; macrdp does not change \
+                 this setting itself."
+            ),
+            Some(true) => {}
+            None => warn!(
+                "--lock-on-disconnect is set, but macrdp couldn't confirm \
+                 this account's screen-lock delay is Immediately (the \
+                 `sysadminctl -screenLock status` check failed) — if it \
+                 isn't, the Mac won't really be locked. See \
+                 docs/known-quirks.md."
+            ),
+        }
+    }
 
     // Shared slots so the signal handler and the session-transition
     // watcher can drop the display RAII guards before process::exit and
@@ -2594,13 +2759,14 @@ async fn async_main() -> Result<()> {
     }
 
     let session_tracker = capture::SessionTracker::default();
-    // Auto-unlock is always-on default behavior (no CLI flag — see the
-    // Context in the lock-on-disconnect design), except: skipped entirely
-    // under --skip-auth, since in that mode `password` was never validated
-    // by PAM and isn't trustworthy to auto-type (see attempt_auto_unlock's
-    // docs). MACRDP_AUTO_UNLOCK=0 is the low-visibility escape hatch.
-    let auto_unlock =
-        !args.skip_auth && auto_unlock_enabled(std::env::var("MACRDP_AUTO_UNLOCK").ok().as_deref());
+    // Auto-unlock is opt-in (--auto-unlock / config AUTO_UNLOCK=1), and
+    // additionally skipped entirely under --skip-auth, since in that mode
+    // `password` was never validated by PAM and isn't trustworthy to
+    // auto-type (see attempt_auto_unlock's docs).
+    let auto_unlock = args.auto_unlock && !args.skip_auth;
+    if args.auto_unlock && args.skip_auth {
+        warn!("--auto-unlock has no effect under --skip-auth; ignoring");
+    }
     if args.detach_primary {
         let vd_id = virtual_display
             .as_ref()
@@ -3410,26 +3576,44 @@ mod lock_on_disconnect_tests {
 }
 
 #[cfg(test)]
-mod auto_unlock_tests {
-    use super::auto_unlock_enabled;
+mod auto_unlock_flag_tests {
+    #[test]
+    fn parses_as_a_plain_opt_in_flag() {
+        use clap::Parser;
+        let args = super::Args::try_parse_from(["macrdp", "--auto-unlock"]);
+        assert!(args.is_ok());
+        assert!(args.unwrap().auto_unlock);
+
+        let args = super::Args::try_parse_from(["macrdp"]);
+        assert!(args.is_ok());
+        assert!(!args.unwrap().auto_unlock);
+    }
+}
+
+#[cfg(test)]
+mod auto_unlock_submission_budget_tests {
+    use super::try_reserve_submission;
+    use std::sync::atomic::AtomicU32;
 
     #[test]
-    fn defaults_on_when_unset() {
-        assert!(auto_unlock_enabled(None));
-        // Unrecognized values fall back to the default (on), not off.
-        assert!(auto_unlock_enabled(Some("maybe")));
-        assert!(auto_unlock_enabled(Some("1")));
+    fn reserves_up_to_the_max_then_refuses() {
+        let counter = AtomicU32::new(0);
+        assert!(try_reserve_submission(&counter, 2));
+        assert!(try_reserve_submission(&counter, 2));
+        // The budget of 2 is now spent — a THIRD reservation must be
+        // refused regardless of whether it comes from the same call's
+        // internal Return-retry loop or a brand-new call for the same lock.
+        // This is exactly the bug the fix guards against: capping CALLS
+        // rather than actual submissions let a single call's internal
+        // retries alone exceed the documented budget.
+        assert!(!try_reserve_submission(&counter, 2));
+        assert!(!try_reserve_submission(&counter, 2));
     }
 
     #[test]
-    fn recognizes_the_escape_hatch() {
-        assert!(!auto_unlock_enabled(Some("0")));
-        assert!(!auto_unlock_enabled(Some("off")));
-        assert!(!auto_unlock_enabled(Some("OFF")));
-        assert!(!auto_unlock_enabled(Some("false")));
-        assert!(!auto_unlock_enabled(Some("no")));
-        // Surrounding whitespace tolerated (matches other env helpers).
-        assert!(!auto_unlock_enabled(Some(" 0 ")));
+    fn zero_budget_never_reserves() {
+        let counter = AtomicU32::new(0);
+        assert!(!try_reserve_submission(&counter, 0));
     }
 }
 
