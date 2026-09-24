@@ -2545,14 +2545,14 @@ async fn async_main() -> Result<()> {
              (pick one mechanism for going headless)"
         ));
     }
-    if (args.restore_windows_on_disconnect || args.lock_on_disconnect)
+    if (args.restore_windows_on_disconnect || args.lock_on_disconnect || args.auto_unlock)
         && !(args.detach_primary || args.capture_primary || args.shield_primary)
     {
         warn!(
-            "--restore-windows-on-disconnect / --lock-on-disconnect have no \
-             effect without --detach-primary, --capture-primary or \
-             --shield-primary (they need the headless session watcher); \
-             ignoring"
+            "--restore-windows-on-disconnect / --lock-on-disconnect / \
+             --auto-unlock have no effect without --detach-primary, \
+             --capture-primary or --shield-primary (they need the headless \
+             session watcher); ignoring"
         );
     }
     if args.lock_on_disconnect {
