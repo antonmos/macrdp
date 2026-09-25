@@ -52,11 +52,18 @@ extern "C" {
 /// above. Returns a dictionary describing the current login-session state;
 /// the also-undocumented `CGSSessionScreenIsLocked` key reads `1` while the
 /// screen is locked. Used only as a READ gate before the reconnect-time
-/// auto-unlock attempt in main.rs — a false negative just skips an unlock
-/// attempt (safe), a false positive means attempting to type into an
-/// already-unlocked desktop (see the residual-risk note at the call site),
-/// so this deliberately fails toward `false` ("not locked") on any lookup
-/// failure rather than erroring.
+/// auto-unlock attempt in main.rs.
+///
+/// Returns `None` when the lookup itself couldn't be completed (missing
+/// symbol, or a null dictionary) — genuinely "unknown," not "not locked."
+/// **This distinction is load-bearing at the call site:** `attempt_auto_unlock`
+/// treats a confirmed `Some(false)` as a lock-cycle boundary and resets the
+/// shared per-lock submission budget there, but must NOT do that on a mere
+/// lookup failure — an intermittently-flaky symbol would otherwise reset the
+/// budget on every failed read, defeating the cap `AUTO_UNLOCK_MAX_SUBMISSIONS`
+/// exists to enforce. Deciding *whether to attempt* an unlock can still fail
+/// toward "skip" on `None` (safe, same as before); it's specifically the
+/// budget-reset side that needed the tri-state.
 ///
 /// **If Apple ever removes this** (as happened to the `CGSession` *binary*
 /// on macOS 26 — see docs/known-quirks.md, the `--lock-on-disconnect`
@@ -65,18 +72,18 @@ extern "C" {
 /// notifications (`NSDistributedNotificationCenter`) instead — an older
 /// mechanism with a longer track record, not a drop-in replacement for this
 /// function's shape.
-pub(super) fn screen_is_locked() -> bool {
+pub(super) fn screen_is_locked() -> Option<bool> {
     unsafe {
         let rtld_default = -2isize as *mut c_void;
         let name = CString::new("CGSessionCopyCurrentDictionary").unwrap();
         let sym = libc::dlsym(rtld_default, name.as_ptr());
         if sym.is_null() {
-            return false;
+            return None;
         }
         let copy_dict: unsafe extern "C" fn() -> CFTypeRef = std::mem::transmute(sym);
         let dict = copy_dict();
         if dict.is_null() {
-            return false;
+            return None;
         }
         // CGSessionCopyCurrentDictionary follows the Copy naming convention
         // (+1 owned reference) — release it once we're done reading it.
@@ -84,7 +91,7 @@ pub(super) fn screen_is_locked() -> bool {
         let value = CFDictionaryGetValue(dict, key.as_concrete_TypeRef() as CFTypeRef);
         let locked = !value.is_null() && CFBooleanGetValue(value) != 0;
         CFRelease(dict);
-        locked
+        Some(locked)
     }
 }
 

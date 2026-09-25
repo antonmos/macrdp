@@ -62,11 +62,13 @@ mod macos {
         DETACH_REENABLE_FAILED.swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Whether the local macOS session is currently screen-locked. Thin
-    /// re-export of the quarantined private-API touch — see
-    /// `private_api::screen_is_locked` for the mechanism and its
-    /// maintenance/fallback notes.
-    pub fn screen_is_locked() -> bool {
+    /// Whether the local macOS session is currently screen-locked —
+    /// `None` when the underlying private-API lookup itself failed (this
+    /// is NOT the same as "not locked"; see the call sites in main.rs for
+    /// why the distinction matters). Thin re-export of the quarantined
+    /// private-API touch — see `private_api::screen_is_locked` for the
+    /// mechanism and its maintenance/fallback notes.
+    pub fn screen_is_locked() -> Option<bool> {
         private_api::screen_is_locked()
     }
 
@@ -1599,9 +1601,10 @@ mod stub {
         false
     }
 
-    /// No screen-lock concept off macOS.
-    pub fn screen_is_locked() -> bool {
-        false
+    /// No screen-lock concept off macOS — definitively not locked, not
+    /// "unknown" (there's nothing to fail to look up).
+    pub fn screen_is_locked() -> Option<bool> {
+        Some(false)
     }
 
     pub struct VirtualDisplay;

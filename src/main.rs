@@ -1356,10 +1356,10 @@ enum AutoUnlockOutcome {
     NotLocked,
     /// A password was submitted and the screen is now unlocked.
     Unlocked,
-    /// Nothing was typed because doing so wasn't safe right now (Caps Lock
-    /// is on, the active layout can't produce every character, or the
-    /// layout couldn't be read) — no submission was spent, so the next
-    /// reconnect simply tries again.
+    /// Nothing was typed because doing so wasn't safe right now (the lock
+    /// state couldn't be determined, Caps Lock is on, the active layout
+    /// can't produce every character, or the layout couldn't be read) —
+    /// no submission was spent, so the next reconnect simply tries again.
     SkippedUnsafe,
     /// The shared submission budget for this lock is exhausted (by this
     /// call, or an earlier one) — no further Return presses will be sent
@@ -1440,14 +1440,30 @@ fn attempt_auto_unlock(password: &str) -> AutoUnlockOutcome {
     // in the keyboard-layout translation notes in known-quirks.md).
     const VK_RETURN: u16 = 0x24;
 
-    if !virtual_display::screen_is_locked() {
-        // Not locked — this is a lock-cycle boundary. Clear the shared
-        // submission/alert state so the NEXT lock starts with a full budget
-        // rather than inheriting whatever a previous, unrelated lock spent.
-        use std::sync::atomic::Ordering as AtomicOrdering;
-        AUTO_UNLOCK_SUBMISSIONS.store(0, AtomicOrdering::SeqCst);
-        AUTO_UNLOCK_GAVE_UP.store(false, AtomicOrdering::SeqCst);
-        return AutoUnlockOutcome::NotLocked;
+    match virtual_display::screen_is_locked() {
+        Some(true) => {}
+        Some(false) => {
+            // CONFIRMED not locked — a lock-cycle boundary. Clear the shared
+            // submission/alert state so the NEXT lock starts with a full
+            // budget rather than inheriting whatever a previous, unrelated
+            // lock spent.
+            use std::sync::atomic::Ordering as AtomicOrdering;
+            AUTO_UNLOCK_SUBMISSIONS.store(0, AtomicOrdering::SeqCst);
+            AUTO_UNLOCK_GAVE_UP.store(false, AtomicOrdering::SeqCst);
+            return AutoUnlockOutcome::NotLocked;
+        }
+        None => {
+            // The lookup itself failed — genuinely unknown, NOT "not
+            // locked." Must not reset the budget here: a flaky lookup
+            // resetting it on every failure would defeat the cap
+            // AUTO_UNLOCK_MAX_SUBMISSIONS exists to enforce. Skip this
+            // attempt (safe direction); the next reconnect tries again.
+            warn!(
+                "auto-unlock: could not determine whether the screen is \
+                 locked — skipping this attempt"
+            );
+            return AutoUnlockOutcome::SkippedUnsafe;
+        }
     }
     // The submission budget is shared across every call for this lock (see
     // AUTO_UNLOCK_SUBMISSIONS's docs) — if an earlier call already spent it,
@@ -1634,7 +1650,14 @@ fn attempt_auto_unlock(password: &str) -> AutoUnlockOutcome {
         }
         let deadline = std::time::Instant::now() + RETURN_ATTEMPT_BUDGET;
         loop {
-            if !virtual_display::screen_is_locked() {
+            // Only a CONFIRMED `Some(false)` counts as success. `None`
+            // (lookup failed) must NOT be read as "unlocked" — that would
+            // both falsely report success and reset the submission budget,
+            // silently defeating the cap on a flaky lookup. Treat it the
+            // same as "still locked": keep polling within this Return's
+            // budget, then fall through to retry (which still costs a
+            // real reserved submission, so this can't loop forever).
+            if virtual_display::screen_is_locked() == Some(false) {
                 use std::sync::atomic::Ordering as AtomicOrdering;
                 AUTO_UNLOCK_SUBMISSIONS.store(0, AtomicOrdering::SeqCst);
                 AUTO_UNLOCK_GAVE_UP.store(false, AtomicOrdering::SeqCst);
