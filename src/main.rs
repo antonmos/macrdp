@@ -2013,22 +2013,43 @@ fn spawn_primary_overlay_watcher<T: Send + 'static>(
                                 }
                                 // Reset the auto-unlock submission budget/alert
                                 // latch HERE, not just on an observed unlock —
-                                // this is a point where the screen is known to
-                                // be unlocked (we're about to lock it), so it's
-                                // always safe, and it's the fix for a real
-                                // live-reproduced lockout: if a prior auto-
-                                // unlock attempt actually succeeded but a too-
-                                // tight detection window (see
-                                // RETURN_ATTEMPT_BUDGET above) missed the
+                                // this is a point where the screen is USUALLY
+                                // unlocked (we're about to lock it), and it's
+                                // the fix for a real live-reproduced lockout:
+                                // if a prior auto-unlock attempt actually
+                                // succeeded but a too-tight detection window
+                                // (see RETURN_ATTEMPT_BUDGET above) missed the
                                 // `Some(false)` flip and reported a false
                                 // BudgetExhausted, nothing would otherwise ever
                                 // reset the shared budget — the NEXT lock
                                 // cycle would start pre-exhausted and refuse to
                                 // even attempt an unlock, indefinitely, on a
                                 // Mac nobody is physically at to recover.
-                                use std::sync::atomic::Ordering as AtomicOrdering;
-                                AUTO_UNLOCK_SUBMISSIONS.store(0, AtomicOrdering::SeqCst);
-                                AUTO_UNLOCK_GAVE_UP.store(false, AtomicOrdering::SeqCst);
+                                //
+                                // GATED on a CONFIRMED `Some(false)` read —
+                                // caught in review: an unconditional reset
+                                // assumed the screen is unlocked here without
+                                // checking, which breaks if it's actually
+                                // already locked (e.g. the account password
+                                // changed while macrdp kept running: RDP still
+                                // accepts the cached old password via NLA, but
+                                // auto-unlock keeps typing that same stale
+                                // password and genuinely fails every time).
+                                // Without the gate, every disconnect/reconnect
+                                // cycle would hand that genuinely-failing
+                                // attempt a fresh budget and burn 2 more real
+                                // PAM submissions against a lock that will
+                                // never clear — exactly the macOS
+                                // escalating-lockout risk the cap exists to
+                                // prevent. `Some(true)` (still locked) or
+                                // `None` (unknown) leaves the budget/latch
+                                // alone, so a persistently-wrong password
+                                // stays given-up rather than retrying forever.
+                                if virtual_display::screen_is_locked() == Some(false) {
+                                    use std::sync::atomic::Ordering as AtomicOrdering;
+                                    AUTO_UNLOCK_SUBMISSIONS.store(0, AtomicOrdering::SeqCst);
+                                    AUTO_UNLOCK_GAVE_UP.store(false, AtomicOrdering::SeqCst);
+                                }
                                 info!(label, "lock-on-disconnect: locking the local session");
                                 if !lock_session() {
                                     warn!(
