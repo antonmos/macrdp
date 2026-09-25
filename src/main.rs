@@ -1632,7 +1632,17 @@ fn attempt_auto_unlock(password: &str) -> AutoUnlockOutcome {
     // is empty, rather than always spending its own private allowance of
     // retries. That is what keeps the total across every call for this lock
     // under AUTO_UNLOCK_MAX_SUBMISSIONS.
-    const RETURN_ATTEMPT_BUDGET: std::time::Duration = std::time::Duration::from_millis(400);
+    //
+    // LIVE-TESTED 2026-09-25 on a Mac mini over ZeroTier: 400ms was too
+    // tight a window for `screen_is_locked()` to observe a real, successful
+    // unlock — 2 of 3 attempts spent their SECOND submission on a Return
+    // that landed after the first had already unlocked the desktop (a
+    // wasted/risky keypress into a live session), then reported a false
+    // `BudgetExhausted` because neither poll caught the `Some(false)` flip
+    // in time, even though the unlock had genuinely succeeded. Raised to
+    // 3s per the live-verified fix suggestion so a slower link/lookup has
+    // real room to register before the next Return is spent.
+    const RETURN_ATTEMPT_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
     const UNLOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
     loop {
         if !try_reserve_submission(&AUTO_UNLOCK_SUBMISSIONS, AUTO_UNLOCK_MAX_SUBMISSIONS) {
@@ -2001,6 +2011,24 @@ fn spawn_primary_overlay_watcher<T: Send + 'static>(
                                     );
                                     return;
                                 }
+                                // Reset the auto-unlock submission budget/alert
+                                // latch HERE, not just on an observed unlock —
+                                // this is a point where the screen is known to
+                                // be unlocked (we're about to lock it), so it's
+                                // always safe, and it's the fix for a real
+                                // live-reproduced lockout: if a prior auto-
+                                // unlock attempt actually succeeded but a too-
+                                // tight detection window (see
+                                // RETURN_ATTEMPT_BUDGET above) missed the
+                                // `Some(false)` flip and reported a false
+                                // BudgetExhausted, nothing would otherwise ever
+                                // reset the shared budget — the NEXT lock
+                                // cycle would start pre-exhausted and refuse to
+                                // even attempt an unlock, indefinitely, on a
+                                // Mac nobody is physically at to recover.
+                                use std::sync::atomic::Ordering as AtomicOrdering;
+                                AUTO_UNLOCK_SUBMISSIONS.store(0, AtomicOrdering::SeqCst);
+                                AUTO_UNLOCK_GAVE_UP.store(false, AtomicOrdering::SeqCst);
                                 info!(label, "lock-on-disconnect: locking the local session");
                                 if !lock_session() {
                                     warn!(
