@@ -4,6 +4,20 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/clintcan/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.8 — lock while away: `--lock-on-disconnect` + `--auto-unlock`
+
+A feature release for headless, remote-only Macs, plus a real `--shield-primary` bug fix. **Everything new is opt-in; the default runtime path is unchanged.**
+
+- **New (experimental): `--lock-on-disconnect` (#181, @antonmos).** Locks the Mac about 25 s after the last RDP client leaves (config `LOCK_ON_DISCONNECT=1`). It needs one of the headless modes (`--detach-primary` / `--capture-primary` / `--shield-primary`). The delay is a cancellable safety buffer, so a blank-recovery self-heal reconnect (up to ~12–15 s) doesn't lock under a session that's coming back; tune it with `LOCK_ON_DISCONNECT_DELAY_MS`. It locks by starting the screen saver — the old `CGSession -suspend` trick no longer exists on macOS 26 — which is only a real password-required lock when *Require password after screen saver begins* is **Immediately**; macrdp warns at startup when it isn't.
+- **New (experimental): `--auto-unlock` (#181, @antonmos).** When a client connects while the Mac is locked, macrdp types the account password into the lock screen (config `AUTO_UNLOCK=1`) — the same password PAM validated at startup and the connecting client proved via CredSSP. **Off by default** because it acts on the *physical* machine: once it fires, anyone at the Mac has a live desktop, and it undoes a lock it didn't set. Safety properties: a shared per-lock budget of **2** real password submissions (below macOS's 3-free-attempt throttle), reset only on a *confirmed* unlock; it skips rather than guesses when Caps Lock is on, the active layout can't type a character, or the lock state can't be read; and every character is resolved to a keystroke before any is typed. Skipped under `--skip-auth`.
+- **Live-verified on a Mac mini** (M1, macOS 26.5): the final pass ran 4/4 lock/unlock cycles over the LAN, lock ~22.5 s after disconnect, unlock ~3 s after connect. The earlier passes — run over ZeroTier from another island, with nobody at the machine — found two bugs — a too-short detection window that raised false "gave up" alarms, and a false give-up leaving the budget spent so the *next* lock couldn't be undone remotely — both fixed and re-verified before merge.
+- **GUI (#188).** The menu-bar controller's Display tab gains a **Lock while away** section with both toggles — disabled and cleared unless a Detach/Blank mode is picked, and with a warning when the lock is on without auto-unlock, since a remote-only Mac is unreachable once it locks.
+- **Fix: `--shield-primary` now engages on a lid-closed MacBook (#187, @antonmos).** A closed lid removes the built-in panel from the display list entirely, so `ShieldedPrimary::install` failed with *no physical display to shield*. Because the overlay watcher only warns, that silently disabled the shield, `--restore-windows-on-disconnect` **and** the connect-time window gather at once, while the RDP session itself kept working. It now degrades to an empty shield.
+- **Known issue:** with `--lock-on-disconnect`, a reconnect started roughly 12–22 s after leaving can be locked mid-handshake — a connection only counts as "back" once it's fully connected. With `--auto-unlock` it self-corrects in about 3 s; with the lock alone, a remote user lands on a lock screen they can't get past. Tracked as a follow-up.
+- **Repo hardening (no runtime change):** `.github/CODEOWNERS` with required code-owner review on `main`, fork-PR CI runs gated on approval for all outside collaborators, and SHA pinning of actions enforced.
+
+Pre-tag gates: `cargo fmt --check` clean on stable and nightly, `cargo clippy --all-targets -- -D warnings` clean, 212 tests passing.
+
 ## v0.9.7 — dependency & security patch: rustls, cryptoki, h2
 
 A patch over v0.9.6 that carries **three security advisories** out of the dependency tree, plus one user-visible UI change. **No change to the default runtime path** beyond the dependency updates themselves.
