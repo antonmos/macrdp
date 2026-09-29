@@ -118,7 +118,7 @@ Both are **ad-hoc signed, not notarized** — open the app once via **right-clic
 | **[Audit log & SIEM](docs/audit-log.md)** | The security audit events (accept / reject / auth / disconnect) — every field and how to interpret them — plus [forwarding the JSON stream](docs/siem-forwarding.md) to a SIEM/SOC collector (Vector / Fluent Bit / rsyslog) and a runnable [OpenSearch SIEM tutorial](docs/siem-tutorial.md) that detects an RDP brute-force end-to-end. |
 | **[vs. other OSS RDP servers](docs/oss-rdp-server-comparison.md)** | Two parts. **Part 1** — the evidence behind every "first" claim in these docs, verified adversarially against FreeRDP/xrdp and re-checked in the source, including what macrdp is **not** first at and how to re-verify when upstreams move. **Part 2** — an honest head-to-head against the other native macOS RDP servers (`x6nux/macrdp`, `RDPonMAC`), written steelmanning theirs, including where they beat us. |
 | **[Release history](docs/release-history.md)** | Per-release narrative of what shipped and what was live-verified. |
-| [CLAUDE.md](CLAUDE.md) | Developer/agent reference — architecture, feature status, macOS gotchas, known quirks. |
+| [CLAUDE.md](CLAUDE.md) | Developer/agent index — current release, plus pointers to the feature list, architecture, macOS gotchas and known quirks. |
 
 ## Why this was made
 
