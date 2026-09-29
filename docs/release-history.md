@@ -4,6 +4,20 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/clintcan/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.9 — rich-text clipboard, both directions
+
+A feature release: **formatted text now survives the clipboard in both directions.** On by default; `--no-rich-clipboard` (config `RICH_CLIPBOARD=0`) restores text + images only. **File copy/paste is unchanged.**
+
+- **New: rich text (#189).** The Windows `HTML Format` and `Rich Text Format` clipboard formats map to the Mac's `public.html` and `public.rtf`, so bold, colours, lists and links cross between Word, Outlook or a browser and Mail, Notes, TextEdit or Pages. A Windows copy is fetched as every representation macrdp can use — plain text, one rich format (HTML preferred, RTF otherwise), one image — and published as a **single** pasteboard item, so the app you paste into picks the richest type it understands: a Chrome "Copy Image" (bitmap *plus* HTML) still pastes as an image. A copy offering files always takes the file path. Images embedded *inside* rich text generally don't survive (Word's HTML points at local temp files).
+- **Fix: Windows-copied text and images no longer echo back.** They weren't marked as macrdp's own pasteboard writes, so the poller advertised them straight back to Windows, which made the client take over its own clipboard with only what was fetched. Marked now — in a separate marker from the file-paste one, so disconnect cleanup never wipes copied text.
+- **Live-verified on Windows 11 (build 26100) mstsc over ZeroTier**, 8/8: Word → TextEdit, Firefox/Chrome → Notes (links clickable), TextEdit → Word, Chrome Copy Image → Preview, files both ways, a Word copy pasted back into Word, plain text into Notepad/Terminal, and `RICH_CLIPBOARD=0`. The live test found and fixed three bugs:
+  - **Firefox and Word announce each copy twice**, 5–180 ms apart. Restarting the fetch at once let the first announce's reply be attributed to the second fetch's request — text in the HTML slot and vice versa — so the copy arrived as plain text. The new copy's first request now waits for the superseded reply and discards it (bounded by a 5 s grace).
+  - A transient format error on a re-announce: a failed representation is now retried once.
+  - **A trailing `^@` pasting Word text into Terminal.** Word can send several trailing NULs and only one was stripped — pre-existing since the first text-clipboard commit. Text now ends at its first NUL.
+- **Tip:** if a paste into Word keeps bold but loses colour, that's Word's *Merge Formatting* paste mode, not macrdp — choose *Keep Source Formatting*.
+
+Pre-tag gates: `cargo fmt --check` clean on stable and nightly, `cargo clippy --all-targets -- -D warnings` clean, 239 tests passing.
+
 ## v0.9.8 — lock while away: `--lock-on-disconnect` + `--auto-unlock`
 
 A feature release for headless, remote-only Macs, plus a real `--shield-primary` bug fix. **Everything new is opt-in; the default runtime path is unchanged.**
