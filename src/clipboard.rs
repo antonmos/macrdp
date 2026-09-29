@@ -176,10 +176,12 @@ impl Collected {
     }
 }
 
-/// Windows→Mac fetch in progress. MS-RDPECLIP allows one outstanding
-/// FormatDataRequest and its reply names no format, so the representations
-/// of one copy are requested strictly in sequence: `current` is the request
-/// on the wire, `queue` what follows, `got` what has arrived.
+/// Windows→Mac fetch in progress. A FormatDataResponse names no format, so
+/// the representations of one copy are requested strictly in sequence — one
+/// request on the wire at a time — which keeps each reply's attribution
+/// exact: `current` is the request on the wire, `queue` what follows, `got`
+/// what has arrived. (MS-RDPECLIP itself allows several outstanding requests,
+/// each answered in order; sequencing is macrdp's choice, not a spec rule.)
 #[derive(Debug, Default)]
 struct RemoteFetch {
     current: Option<Want>,
@@ -2001,7 +2003,7 @@ mod tests {
         assert!(backend.fetch.queue.is_empty());
     }
 
-    /// MS-RDPECLIP allows one outstanding request, so the second
+    /// Requests go out one at a time (see RemoteFetch), so the second
     /// representation is only requested once the first reply lands — and a
     /// failed representation doesn't abandon the rest.
     #[test]
