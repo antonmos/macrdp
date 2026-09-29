@@ -15,6 +15,12 @@ slowly. Part 2 changes whenever either project ships something — re-read it wi
 to a 3-vote refutation panel — 25 claims → 16 confirmed, 9 refuted) plus a direct read of
 FreeRDP's source. The brief was explicitly to *disprove* the claims, not confirm them.
 
+**Re-verified 2026-09-30** by direct source checks: FreeRDP `master` (as of 2026-09-29),
+**upstream IronRDP `master`** — which since July has grown UDP, USB and camera crates of its
+own, so it now gets a dated section, [§6](#6-upstream-ironrdp--a-dated-timeline) —
+lamco-rdp-server, x6nux/macrdp and CGKPK/RDPonMAC. All three firsts still stand. The UDP
+one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §6).
+
 > **House rule: always write "as far as is known" / "first known" — never a bare "first"
 > or "only".** These are negative-existence claims over a field that was not exhaustively
 > enumerated (see [Limits](#limits-of-this-survey)). One claim we might have made was
@@ -28,8 +34,8 @@ FreeRDP's source. The brief was explicitly to *disprove* the claims, not confirm
 
 | Capability (server direction) | Verdict | Confidence |
 |---|---|---|
-| **USB redirection** — present a client's USB device as a real local device (MS-RDPEUSB/URBDRC) | **First known** | High |
-| **UDP multitransport** — actually carry channel data over UDP (MS-RDPEMT/RDPEUDP) | **First known** | High |
+| **USB redirection** — present a client's USB device as a real local device (MS-RDPEUSB/URBDRC) | **First known** (2026-07-06) — **no longer the only one**: qemu-display's `qemu-rdp` followed on 2026-08-24, presenting to a QEMU guest (see §1) | High |
+| **UDP multitransport** — actually carry channel data over UDP (MS-RDPEMT/RDPEUDP) | **First known** — upstream IronRDP's equivalent is an **open PR** (#1954), see §6 | High today; **re-check when #1954 merges** |
 | **Camera redirection** — client webcam → **a real OS camera device**, end to end (MS-RDPECAM) | **First known** *(state it precisely — see below)* | High after source read |
 | "First/only **native macOS** RDP server" | **❌ REFUTED — do not claim** | High |
 | **H.264/EGFX** server-side encoding | **Not a first** — don't claim | High |
@@ -56,7 +62,44 @@ URBDRC CVE is phrased strictly client-direction; and xrdp has explicitly **decli
 implement it ([discussion #2673](https://github.com/neutrinolabs/xrdp/discussions/2673):
 "unlikely to be something the project would want to take on the maintenance for").
 
-**Caveat that softened "only" → "the only working one":**
+**Upstream IronRDP now has the server side of the protocol — built by uchouT, in
+coordination with macrdp.** IronRDP merged server-direction MS-RDPEUSB *protocol processors*
+on **2026-07-01** ([#1394](https://github.com/Devolutions/IronRDP/pull/1394)) and wired them
+into `ironrdp-server` on **2026-08-24**
+([#1417](https://github.com/Devolutions/IronRDP/pull/1417)), both by uchouT. macrdp worked
+with him on it rather than in parallel: its live bring-up against real clients produced the
+`ironrdp-rdpeusb` interop fixes that code sits on
+([#1418](https://github.com/Devolutions/IronRDP/pull/1418) lenient USB-3 capability values,
+[#1420](https://github.com/Devolutions/IronRDP/pull/1420) full configuration descriptor,
+[#1513](https://github.com/Devolutions/IronRDP/pull/1513) `UsbDevice == 0`) plus a decoder fuzz
+target ([#1690](https://github.com/Devolutions/IronRDP/pull/1690)); it flagged that #1417 as
+merged lacked the per-device capability exchange mstsc requires; and it validated uchouT's fix
+([#1711](https://github.com/Devolutions/IronRDP/pull/1711)) on **real mstsc with a redirected
+Xbox controller** before it merged on 2026-08-31. The two efforts are complementary, not
+rivals.
+
+What upstream provides is a library seam — the application implements `DeviceFactory` /
+`UsbRedirDevice`, and nothing in IronRDP creates an OS-level device (no virtual host
+controller, usbip, vhci or gadget code anywhere in the tree). So the claim stands as worded —
+*presenting* the device — but note the dates: uchouT's protocol processors landed **five days
+before** macrdp's redirected drive first mounted (2026-07-06). **Don't claim "first
+server-side URBDRC implementation"**; claim the end-to-end presentation.
+
+**A second implementation now exists — say "first known", never "only" (found
+2026-09-30).** [qemu-display](https://gitlab.com/marcandre.lureau/qemu-display)'s RDP
+server, `qemu-rdp`, merged RDP USB redirection on **2026-08-24** (three commits by uchouT —
+the same collaborator as above, and the natural consumer of his own server-side USB code): it
+implements IronRDP's `UsbRedirDevice` and
+bridges the client's device into QEMU over `usbredir`, so it appears as a real USB device
+**inside the QEMU guest**. That is seven weeks after macrdp's first mount (2026-07-06), and it
+presents to a virtual machine rather than to the server's own OS — but it is a genuine
+server-direction presentation, so "the only working one" (the wording below) is retired.
+**Not tested by us** — record it as a peer, not as verified-working. Found by a GitHub code
+search for implementations of `UsbRedirDevice`; the other hits were vendored copies of
+`ironrdp-server` (AKolenda/ironrdp-winrdp, racko-remote, nyaterm) and an unrelated 2016 usbredir
+parser.
+
+**Caveat that softened "only" → "the only working one"** (July, now moot — see above):
 [`zoa-kas/xrdp-usb-redirector`](https://github.com/zoa-kas/xrdp-usb-redirector) is a
 vendored xrdp 0.9.21.1 fork with a single 2024-03-27 commit *"Add functionality for token
 passing and USB device passthrough as RAW"* — 5 commits total, 0 stars, unmodified stock
@@ -75,9 +118,18 @@ over an MS-RDPEMT tunnel on MS-RDPEUDP — not a TCP-side bootstrap stub.
 
 **Evidence.** FreeRDP's client **hard-rejects** multitransport via a dedicated
 `multitransport_no_udp` stub that unconditionally answers `E_ABORT`; core
-`libfreerdp/core/multitransport.c` contains no RDPEUDP implementation. The RDPEUDP /
-RDPEUDP2 work (David Fort) stayed **out of tree**. No surveyed OSS RDP server carries
-channel data over UDP on either side.
+`libfreerdp/core/multitransport.c` contains no RDPEUDP implementation (still true
+2026-09-30). The RDPEUDP / RDPEUDP2 work (David Fort) stayed **out of tree**.
+
+**Upstream IronRDP is catching up, and is the one to watch.** It gained an RDP-UDP
+transport for its **client** in August–September 2026 (see §6), and server-side
+*bootstrapping* on **2026-09-28** — but the piece that actually moves channel data (EGFX)
+onto the server's UDP tunnel is
+[**#1954**](https://github.com/Devolutions/IronRDP/pull/1954), opened 2026-09-10 and
+**still open** at this check. macrdp's server carried EGFX over UDP on real mstsc on
+**2026-06-26** and shipped it in v0.8.15 on **2026-06-28**. So "first known" holds, and by a
+dated margin — but once #1954 merges, the claim becomes "first", not "only", and
+IronRDP's server should be named alongside it.
 
 Sources: [`multitransport.c`](https://github.com/FreeRDP/FreeRDP/blob/master/libfreerdp/core/multitransport.c),
 [issue #10669](https://github.com/FreeRDP/FreeRDP/issues/10669),
@@ -109,6 +161,11 @@ implement decode, presentation, and device exposure.
 the redirected samples and *register a real camera device with the host OS*, so ordinary
 apps (Photo Booth, Zoom, FaceTime) can select it.
 
+**Upstream IronRDP (checked 2026-09-30):** `ironrdp-rdpecam` landed on **2026-09-02**
+([#1870](https://github.com/Devolutions/IronRDP/pull/1870)) with codecs and a `client.rs`
+only — the client-direction side, not wired into `ironrdp-client` yet, and no server half.
+Not a counterexample.
+
 **Not a counterexample:** Apache Guacamole's RDPECAM work
 ([GUACAMOLE-1415](https://issues.apache.org/jira/browse/GUACAMOLE-1415)) is
 client-direction — browser → guacd → Windows host. Despite the name, `guacd` acts
@@ -129,8 +186,9 @@ Both are genuine RDP servers (they terminate the protocol themselves — not VNC
 proxies), and both are **earlier**. macrdp's docs never actually made this claim, so nothing
 required retraction — it's recorded here so it's never made by accident.
 
-**They do not threaten claims 1–3:** both are display + input only. Neither implements USB,
-camera, UDP-multitransport, drive, or smart-card redirection.
+**They do not threaten claims 1–3:** neither implements USB, camera, UDP-multitransport,
+drive, or smart-card redirection (source trees re-checked 2026-09-30; neither has pushed
+code since). x6nux does have audio and clipboard; RDPonMAC has only stubs for both.
 
 → Both projects are compared properly in **[Part 2](#part-2--project-comparisons)**.
 
@@ -144,13 +202,55 @@ camera, UDP-multitransport, drive, or smart-card redirection.
 - [Lamco's comparison page](https://lamco.ai/comparison/) is marketing-quality; the
   verification panel rejected claims resting on it. Don't cite it in either direction.
 
+## 6. Upstream IronRDP — a dated timeline
+
+Upstream IronRDP is the project most likely to overtake these claims: macrdp is built on
+it, and since July it has grown UDP, USB and camera crates of its own. Dates are merge dates
+on Devolutions/IronRDP `master`; macrdp's are the first live verification and the first
+release containing it. Checked 2026-09-30.
+
+| Capability (server direction) | macrdp | Upstream IronRDP | FreeRDP |
+|---|---|---|---|
+| **UDP — channel data over the tunnel** | EGFX over reliable RDPEUDP, **verified on real mstsc 2026-06-26**; shipped v0.8.15 (**2026-06-28**). Lossy-UDP AAC audio soak-verified 2026-06-29. | **Client** transport: `ironrdp-rdpeudp` + `ironrdp-rdpemt` 2026-08-15/16 ([#1627](https://github.com/Devolutions/IronRDP/pull/1627), [#1626](https://github.com/Devolutions/IronRDP/pull/1626)), async driver 2026-08-18 ([#1687](https://github.com/Devolutions/IronRDP/pull/1687)), RDPEUDP v1/v2 data transfer 2026-09-10 ([#1919](https://github.com/Devolutions/IronRDP/pull/1919)). **Server** bootstrapping 2026-09-28 ([#1951](https://github.com/Devolutions/IronRDP/pull/1951), [#1953](https://github.com/Devolutions/IronRDP/pull/1953), [#1964](https://github.com/Devolutions/IronRDP/pull/1964), [#1965](https://github.com/Devolutions/IronRDP/pull/1965)). Server **EGFX migration onto UDP: [#1954](https://github.com/Devolutions/IronRDP/pull/1954), opened 2026-09-10, still open.** | None, either side |
+| **USB — present the client's device** | Redirected flash drive **mounts on the Mac, 2026-07-06** (real Linux FreeRDP client); shipped v0.8.27 (**2026-07-07**). | Server-direction MS-RDPEUSB **protocol processors 2026-07-01** ([#1394](https://github.com/Devolutions/IronRDP/pull/1394)); `ironrdp-server` integration 2026-08-24 ([#1417](https://github.com/Devolutions/IronRDP/pull/1417)). A library seam (`DeviceFactory` / `UsbRedirDevice`) — **no OS device presentation**. First downstream presenter: qemu-display's `qemu-rdp`, 2026-08-24 (to a QEMU guest; see §1). | None (no `channels/urbdrc/server/`, [#7558](https://github.com/FreeRDP/FreeRDP/issues/7558) open) |
+| **Camera — client webcam as a real OS camera** | **Live on real mstsc 2026-07-20** at 1080p/~30 fps; shipped v0.9.0 (**2026-07-20**). | `ironrdp-rdpecam` 2026-09-02 ([#1870](https://github.com/Devolutions/IronRDP/pull/1870)): codecs + **client**-direction state machine only, not yet wired into `ironrdp-client`; no server half. | Server **endpoint** only — hands raw samples to a callback, no decode, no device (§3) |
+
+How to read it:
+
+- **UDP** is the claim with the least margin left. Upstream built its transport client-first and
+  is now wiring the server; when #1954 merges, IronRDP's server will carry EGFX over UDP too.
+  macrdp's lead is dated (~2½ months before #1954 was even opened), but from then on say "first
+  known", never "only", and name IronRDP.
+- **USB** — upstream's *protocol* processors predate macrdp's first mount by five days, so the
+  claim is strictly the **end-to-end presentation**, which upstream deliberately leaves to the
+  application. This column is a collaboration, not a race: see §1 for macrdp's part in it.
+- **Camera** — upstream is client-direction only. No change.
+- **Who built what (checked 2026-09-30).** USB is the one column macrdp collaborated on (§1).
+  **UDP is independent work** by glamberson (Lamco) and AKolenda: macrdp has no comments or
+  reviews on that series or on the RDP-UDP tracking issue
+  [#140](https://github.com/Devolutions/IronRDP/issues/140), and never proposed its own
+  `ironrdp-rdpeudp` upstream. Its only UDP-adjacent upstream change is
+  [#1453](https://github.com/Devolutions/IronRDP/pull/1453) (merged 2026-07-30), which exposes the
+  client's multitransport flags on `AcceptorResult`; #1951's server offer does not build on it
+  (it captures the same GCC field itself), so the two are complementary halves written
+  separately. **Camera is independent work** by mamoreau (#1870). What stays local to macrdp:
+  the UDP transport, the USB *presentation* (the macOS virtual host controller) and the camera
+  pipeline.
+
 ## Limits of this survey
 
 The honest boundary on claims 1–3: the survey did **not** affirmatively clear **ogon**,
-**gnome-remote-desktop**, the **Weston/wlroots** RDP backends, **NeutrinoRDP**, or other
-IronRDP-downstream servers (lamco, hypr, cosmic-ext, ARISU) for server-direction USB,
-camera, or UDP. The claims rest on FreeRDP + xrdp absence-of-evidence — strong for those two
-projects, but not an exhaustive field survey. Hence "as far as is known".
+**gnome-remote-desktop**, the **Weston/wlroots** RDP backends, **NeutrinoRDP**, or the
+IronRDP-downstream servers hypr, cosmic-ext and ARISU for server-direction USB, camera, or
+UDP. The claims rest on FreeRDP + xrdp absence-of-evidence plus the IronRDP timeline in §6 —
+strong for those projects, but not an exhaustive field survey. Hence "as far as is known".
+
+**Cleared or found since July (2026-09-30):**
+- **lamco-rdp-server** (IronRDP-based, active) — no UDP, USB or camera in its source; its own
+  `Cargo.toml` says server-side drive redirection is "NOT YET AVAILABLE". Cleared.
+- **qemu-display / `qemu-rdp`** — has server-direction USB since 2026-08-24 (§1). Found by
+  searching GitHub for implementations of IronRDP's `UsbRedirDevice`; the same search is the
+  cheapest way to find the next one.
 
 Also note that one supporting line of evidence was voted down during verification: two
 claims asserting FreeRDP's merged MS-RDPECAM PR #10258 is client-only were **refuted**,
@@ -168,8 +268,14 @@ These are absence claims about actively developed upstreams. To re-check:
 3. **Camera** — does `channels/rdpecam/server/camera_device_main.c` still merely
    `IFCALLRET(context->SampleResponse, …)` with the raw payload, with no decoder and no OS
    device registration?
-4. **Field** — have ogon / gnome-remote-desktop / the IronRDP downstreams grown any
-   server-direction redirection channel?
+4. **Upstream IronRDP** — has [#1954](https://github.com/Devolutions/IronRDP/pull/1954)
+   (server EGFX over UDP) merged? Does anything in the tree present a USB device to the OS, or
+   has `ironrdp-rdpecam` grown a server half? Check who depends on the crates:
+   `git grep -l 'ironrdp-rdpeudp\|ironrdp-rdpeusb\|ironrdp-rdpecam' -- 'crates/*/Cargo.toml'`.
+5. **Field** — have ogon / gnome-remote-desktop / the IronRDP downstreams grown any
+   server-direction redirection channel? Search GitHub code for implementations of
+   `UsbRedirDevice` and callers of `accept_finalize_with_multitransport` (IronRDP's server-side
+   extension points for USB and UDP).
 
 **Part 2 rots faster than Part 1** and on a different trigger: Part 1 tracks *absences* in
 upstreams that change slowly, while Part 2 tracks two actively-developed projects. Re-check
@@ -195,8 +301,9 @@ by ~7 weeks**. Confusingly, it has the same name. This section is written advers
 steelmanning theirs — because "we're better" is not a useful claim, and in several places
 it isn't true.
 
-**Facts (checked 2026-07-20):** created 2026-03-24, GPL-3.0, 23★/7 forks, 56 commits, last
-*code* push 2026-05-18. Ours: created 2026-05-13, Apache-2.0, 17★, actively pushed.
+**Facts (re-checked 2026-09-30):** created 2026-03-24, GPL-3.0, 52★/17 forks, last *code*
+push still **2026-05-18** — no commits since the July comparison. Ours: created 2026-05-13,
+MIT OR Apache-2.0, 40★/9 forks, pushed 2026-09-29.
 
 > **Verified against their SOURCE TREE, not their README (2026-07-20).** This matters: their
 > README advertises 8 features and **omits audio and clipboard entirely**, both of which they
@@ -209,8 +316,7 @@ it isn't true.
 |---|---|
 | **AVC444 shipped** ("pixel-perfect color", RDP 10) — `yuv444_split.rs` (19 KB) | **Not wired here — parked deliberately, not unfinished.** `src/avc444.rs` has spec-compliant split/combine + roundtrip tests; upstream `ironrdp-egfx` already exposes `send_avc444_frame`. Parked on a *measurement*: VideoToolbox shares one hardware encoder block (two sessions ≈ **1.02× throughput**, effectively serial), so AVC444 costs ~2× encode wall-clock — fine at 1080p/60 (~10 ms/frame), **doesn't fit 4K/60** (~39 ms vs 16.6 ms). Plan is opt-in `--avc444` with that caveat. **They run on the same Apple Silicon and inherit the identical constraint** — they shipped it anyway. |
 | **openh264 software encoder** (13.8 KB) — a VideoToolbox-independent H.264 path | **We have none — H.264 is VideoToolbox-only.** Calibrate this: macrdp is macOS-only and VideoToolbox H.264 encode exists on every supported Mac, so "hardware encode unavailable" is close to a null case, and we still have a full *software* **legacy** path (`rfx.rs`, `nscodec.rs`, `bitmap.rs`) that non-AVC420 clients fall back to automatically. The more interesting angle is **AVC444**: it needs two H.264 streams, and we parked it because VideoToolbox serializes them (1.02×, one shared hardware block) — but a software encoder runs on CPU cores, so VT-for-main + openh264-for-aux could give real parallelism the VT-only budget can't. That may be why they ship both (**unverified — not checked whether they actually pair them**). Worth investigating if AVC444 is ever revisited. |
-| **HTML clipboard format** (`html.rs`) | Ours does CF_UNICODETEXT / CF_DIB / file lists — **no HTML**. |
-| **Lock-screen capture** (CoreGraphics fallback) | We have none — but see [known-quirks.md](known-quirks.md): the lock screen renders on the *physical* panel and macOS blocks synthetic input to the login window, so copying this yields a screen you still cannot type into. Lower value than it appears. |
+| **Lock-screen capture** (CoreGraphics fallback) | We have none — but see [known-quirks.md](known-quirks.md): the lock screen renders on the *physical* panel and macOS blocks synthetic input to the login window, so copying this yields a screen you still cannot type into. Lower value than it appears. (Different feature, for completeness: since v0.9.8 macrdp can *lock* a headless Mac when the client leaves and unlock it on return — opt-in, experimental.) |
 | **Full Tauri GUI** — dashboard, charts, logs, settings, tray, SQLite | Ours is a menu-bar controller. Theirs is a substantially larger application. |
 | **TOML config with hot reload** | We use `config.env` and mostly need a restart. |
 | Earlier (2026-03-24 vs 2026-05-13), more stars | — |
@@ -222,12 +328,14 @@ missing on their side:
 
 - **Audio** — both have it (`macrdp-audio`, ~11 KB; ours `audio.rs` 43 KB + `aac.rs` 16 KB). Ours
   adds opt-in AAC compression and can carry audio on a lossy UDP flow; theirs is PCM-focused.
-- **Clipboard** — both have it, at comparable scale (theirs ~53 KB incl. `transfer.rs`,
-  `pasteboard.rs`, `file.rs`, `html.rs`; ours 59 KB). Format-by-format (both trees read
-  2026-07-20): **text** (CF_UNICODETEXT) ✅ both; **images** (CF_DIB) ✅ both — ours PNG↔DIB,
+- **Clipboard** — both have it (theirs ~53 KB incl. `transfer.rs`, `pasteboard.rs`, `file.rs`,
+  `html.rs`; ours ~110 KB incl. `clipboard_rich.rs`). Format-by-format: **text**
+  (CF_UNICODETEXT) ✅ both; **images** ✅ both — ours PNG↔DIB (and DIBV5 accepted from Windows),
   theirs accepting `public.png`/`tiff`/`jpeg`→DIB; **file lists** (FileGroupDescriptorW) ✅ both;
-  **HTML** (0xD010) — **theirs only**. Neither implements CF_DIBV5 or CF_BITMAP. So HTML is the
-  single clipboard delta, in their favour.
+  **HTML** ✅ both — theirs since before July, **ours since v0.9.9 (2026-09-29)**, which closed
+  the one clipboard gap the July comparison found. Ours also carries **RTF** (Word's native
+  rich format, and the only rich format some Word builds offer), both directions, live-verified
+  on Windows 11 mstsc. Their tree has no RTF.
 - **Adaptive bitrate**, **hardware H.264 via VideoToolbox**, **HiDPI/Retina capture**, **NLA/CredSSP
   + auto TLS**, **RemoteFX (RFX)** — present on both. **But not NSCodec — see below.**
 
@@ -241,7 +349,8 @@ Each of the following is **absent from their entire source tree** (whole-tree se
   gamepads work), **camera** (client webcam → a real macOS camera), **drive** (client drive as a
   real read-write NFS volume), **smart card** (client's card usable by macOS PC/SC apps).
 - **Headless operation** — `CGVirtualDisplay` virtual displays plus `--capture-primary` /
-  `--detach-primary` blanking, so the Mac serves a desktop with no monitor attached.
+  `--detach-primary` / `--shield-primary` blanking, so the Mac serves a desktop with no monitor
+  attached (`--shield-primary` keeps it lockable), plus opt-in lock-on-disconnect.
 - **UDP multitransport** (MS-RDPEMT/RDPEUDP), including lossy-flow audio.
 - **Production hardening** — per-IP rate-limiting + escalating lockout, a structured JSON audit
   stream for SIEM, a health-check watchdog, bounded log rotation, mstsc blank-recovery, and
@@ -258,13 +367,16 @@ Each of the following is **absent from their entire source tree** (whole-tree se
   wired up*; the contribution was the handler, encoder-codec slot, dispatch variant, selection
   arm and server-side `CodecProperty::NsCodec` match. Their vendored `ironrdp-server-gfx` fork
   predates or omits that merge, so it is available upstream and simply unadopted.
-- **Licensing** — Apache-2.0 vs their GPL-3.0; materially different for embedding or commercial use.
+- **Licensing** — MIT OR Apache-2.0 vs their GPL-3.0; materially different for embedding or commercial use.
 - **Upstream contribution posture.** Both projects vendor *patched* IronRDP forks — only one feeds
-  fixes back. Measured 2026-07-20 via the GitHub API: **macrdp's author has 19 PRs to
-  Devolutions/IronRDP, 14 merged; x6nux has 0.** Merged work includes the RDPSND audio
-  keep-newest fix (**#1276**), `SuppressOutput`/`RefreshRectangle` handling (**#1319**), the
-  NSCodec encoder + selection (**#1332**), EGFX capability-decode tolerance (**#1298**), three
-  CLIPRDR fixes (**#1299/#1300/#1301**), and acceptor field surfacing (**#1373/#1397/#1359**) —
+  fixes back. Measured 2026-09-30 via the GitHub API: **macrdp's author has 22 PRs to
+  Devolutions/IronRDP, all 22 merged (2026-05-15 → 2026-08-17); x6nux has 0.** Merged work
+  includes the RDPSND audio keep-newest fix (**#1276**), `SuppressOutput`/`RefreshRectangle`
+  handling (**#1319**), the NSCodec encoder + selection (**#1332**), EGFX capability-decode
+  tolerance (**#1298**), three CLIPRDR fixes (**#1299/#1300/#1301**), acceptor field surfacing
+  (**#1373/#1397/#1359/#1404/#1453**), the Server Auto-Reconnect Cookie (**#1405**), USB-PDU
+  fixes (**#1418/#1420/#1513**), a pre-TLS denial-of-service fix (**#1556**) and a USB-decoder
+  fuzz target (**#1690**) —
   several of which let macrdp *delete* vendored forks entirely. This is a real difference in
   kind, not a scoreboard: fixes landed upstream benefit every IronRDP downstream **including
   x6nux**, and the NSCodec gap above is exactly that — sitting upstream, contributed here,
@@ -282,18 +394,21 @@ color and a nice UI" theirs is a reasonable — arguably better-presented — ch
 
 ## CGKPK/RDPonMAC — the other native macOS RDP server
 
-[`CGKPK/RDPonMAC`](https://github.com/CGKPK/RDPonMAC) (created 2026-04-26, Apache-2.0) is a
+[`CGKPK/RDPonMAC`](https://github.com/CGKPK/RDPonMAC) (created 2026-04-26, Apache 2.0 per its README) is a
 genuine native macOS RDP server built on a different stack: **libxrdp + ScreenCaptureKit**,
 with `CGDisplayCreateImage` login-screen fallback, `CGEvent`/IOKit HID input injection, and
 verified service to both mstsc and sdl-freerdp. It terminates RDP itself — not a VNC bridge,
 not a proxy.
 
-It is **display + input only**: no audio, clipboard, or any redirection channel. Its one
+It is **display + input only**: no audio, clipboard, or any redirection channel. (Its tree
+does contain `RDPAudioBridge.c` / `RDPClipboardBridge.c` — both are stubs marked "re-implement
+… in Phase 8", and its README lists clipboard and audio as planned.) Its one
 notable capability macrdp lacks is the **login-screen capture fallback** — see the
 capture-primary lock quirk in [known-quirks.md](known-quirks.md) for why that turns out to
 matter less than it sounds (a remotely-visible lock screen still cannot be typed into).
 
-Its activity was not tracked in detail; treat the above as a snapshot, not a current status.
+Last pushed **2026-04-27** (re-checked 2026-09-30) — dormant since. Its README states
+Apache 2.0, though GitHub detects no license file. Treat the above as a snapshot.
 
 ## Scope of Part 2
 
