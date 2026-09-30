@@ -4,6 +4,17 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/clintcan/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.10 — microphone redirection
+
+A feature release: **the client's microphone presents as a real macOS input device.** Opt-in and EXPERIMENTAL; the default runtime path is unchanged.
+
+- **New: microphone redirection (#191).** `--enable-microphone-redirection` (config `ENABLE_MICROPHONE_REDIRECTION=1`, or the GUI controller's Settings → Redirection → Microphone) negotiates MS-RDPEAI on the `AUDIO_INPUT` channel and feeds the client's mic into **"macrdp Microphone"**, a Core Audio device in System Settings → Sound → Input, Zoom, Teams, FaceTime and QuickTime. The client opts in too (mstsc: Remote audio → Settings → *Record from this computer*). The driver ships inside `macrdp.app` and is installed once from the controller (one admin prompt, Core Audio restarts; no entitlement).
+- **Transport:** received PCM goes through a POSIX shared-memory ring into the plug-in inside `coreaudiod`. The ring is created only once the client negotiates the mic, exclusively, at mode 0644, and wiped and removed when the session ends; the plug-in reads it read-only and validates the header. **Other local accounts on the Mac can read a live stream** — see the loopback-IPC note (channel 5) in `docs/macos-gotchas.md`.
+- **Format:** 16-bit PCM at 44.1 kHz only (there is no resampler). A client that can't offer it gets no mic, and macrdp logs why.
+- **Upstream:** the protocol layer is vendored `ironrdp-server` divergence (25). Upstream IronRDP now has `ironrdp-rdpeai` (#1645, #1946); macrdp adopts it at the next pin bump.
+- **Verified:** live on Windows 11 mstsc with the entitled build — the ring-v2 test recorded the client's voice at −10.6 dB peak; on the final build the log confirms the 44.1 kHz format, a minute of streaming and a clean release on disconnect. Not live-tested on FreeRDP's `/microphone`.
+- **Fix (#190):** `--lock-on-disconnect` no longer locks underneath a client that reconnected but is still handshaking (~10 s over ZeroTier). A pending lock holds for a recent authenticated reconnect, or briefly for a just-accepted connection, capped at 30 s so an unauthenticated peer can only delay it.
+
 ## v0.9.9 — rich-text clipboard, both directions
 
 A feature release: **formatted text now survives the clipboard in both directions.** On by default; `--no-rich-clipboard` (config `RICH_CLIPBOARD=0`) restores text + images only. **File copy/paste is unchanged.**

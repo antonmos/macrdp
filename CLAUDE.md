@@ -24,8 +24,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Status
 
 Functional v0 — daily-driver usable on a trusted LAN and over the internet
-(VPN/ZeroTier). **Latest release: v0.9.9** (rich-text clipboard, #189). Unreleased on
-`main`: #190 (`--lock-on-disconnect` holds while a reconnect is handshaking).
+(VPN/ZeroTier). **Latest release: v0.9.10** (microphone redirection, EXPERIMENTAL opt-in,
+#191 — vendored divergence (25), adopt upstream `ironrdp-rdpeai` at the pin bump; plus #190,
+`--lock-on-disconnect` holds while a reconnect is handshaking).
 **Per-release detail — what shipped, what was verified live, the war stories — lives in
 `docs/release-history.md`; read it before reasoning about when/why something changed.**
 Release cuts update that file, the README status line, and this Status line.
