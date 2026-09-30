@@ -521,8 +521,10 @@ Each of the following is **absent from their entire source tree** (whole-tree se
   predates or omits that merge, so it is available upstream and simply unadopted.
 - **Licensing** — MIT OR Apache-2.0 vs their GPL-3.0; materially different for embedding or commercial use.
 - **Upstream contribution posture.** Both projects vendor *patched* IronRDP forks — only one feeds
-  fixes back. Measured 2026-09-30 via the GitHub API: **macrdp's author has 23 PRs to
-  Devolutions/IronRDP, all 23 merged (merge dates 2026-05-21 → 2026-09-30); x6nux has 0.** Merged work
+  fixes back. Measured 2026-09-30 via the GitHub API: **macrdp's author has 24 PRs to
+  Devolutions/IronRDP — 23 merged (merge dates 2026-05-21 → 2026-09-30) and 1 open (#2056,
+  moving the clipboard test helpers into the testsuite library, following a maintainer's note on
+  #2053); x6nux has 0.** Merged work
   includes the RDPSND audio keep-newest fix (**#1276**), `SuppressOutput`/`RefreshRectangle`
   handling (**#1319**), the NSCodec encoder + selection (**#1332**), EGFX capability-decode
   tolerance (**#1298**), three CLIPRDR fixes (**#1299/#1300/#1301**), QOI bitmap fixes
