@@ -16,7 +16,7 @@ Full per-release notes (what shipped, what was verified live, and the war storie
 
 ## Production readiness
 
-Short version: **a polished v0 daily-driver for trusted LANs and your own VPN — not an enterprise RDP server.** Use it to reach your own Mac over a network you control; don't put it on a public IP or treat it as multi-user/critical infrastructure.
+Short version: **production-ready for single-user use on a LAN or VPN** — soak-tested past 48 h twice with no leaks or panics, hardened, and abuse-tested. **Not an enterprise RDP server:** one session at a time, a solo project with no SLA, and features marked *experimental* (for example USB, microphone, lock-on-disconnect/auto-unlock, UDP multitransport) haven't been soak-tested. **Never expose it — or any RDP server — on a public IP;** reach it over a VPN or RD Gateway.
 
 **Solid (verified on real mstsc / Microsoft Remote Desktop / FreeRDP):** TLS + NLA/CredSSP auth against your Mac account (Keychain-backed, real CA certs supported, per-IP rate-limiting + lockout + audit log); the full daily workflow (display, input incl. non-US layouts, clipboard/files both ways, audio, drive + smart-card redirection, headless virtual displays); H.264 with congestion-responsive rate control that degrades gracefully instead of freezing; signed/notarized packaging with a LaunchAgent, menu-bar controller, and a health-check watchdog; soak-tested past 48 h twice (v0.9.3, v0.9.6; no leaks, 0 panics) and abuse-tested; 250+ tests in CI.
 
