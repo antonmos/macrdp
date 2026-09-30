@@ -94,6 +94,11 @@ fn write_wav_header(f: &mut File, format: &AudioFormat) -> std::io::Result<()> {
 
 impl AudinSampleSink for WavDumpSink {
     fn on_format(&mut self, format: &AudioFormat) {
+        // A renegotiation starts a new file: finish the current one first, and
+        // start the byte count over, so neither file ends up with wrong sizes.
+        self.finalize();
+        self.data_bytes = 0;
+        self.packets = 0;
         let dir = std::env::var_os("TMPDIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -143,8 +148,9 @@ impl AudinSampleSink for WavDumpSink {
     }
 }
 
-impl Drop for WavDumpSink {
-    fn drop(&mut self) {
+impl WavDumpSink {
+    /// Patch the size fields of the current file and close it.
+    fn finalize(&mut self) {
         let Some(mut f) = self.file.take() else {
             return;
         };
@@ -154,10 +160,16 @@ impl Drop for WavDumpSink {
             bytes = self.data_bytes,
             path = self
                 .path
-                .as_ref()
+                .take()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
             "MS-RDPEAI mic dump: finalized WAV"
         );
+    }
+}
+
+impl Drop for WavDumpSink {
+    fn drop(&mut self) {
+        self.finalize();
     }
 }

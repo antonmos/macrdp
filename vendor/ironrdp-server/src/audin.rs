@@ -10,11 +10,10 @@
 //! one [`DvcProcessor`] that drives the whole handshake through its `start()`/
 //! `process()` return values (no event-sender needed).
 //!
-//! **Phase 0 (this module): full protocol negotiation → the client streams mic
-//! audio, logged.** No decode/resample, no macOS virtual microphone. This is the
-//! GO/NO-GO gate: the log line proving mstsc/FreeRDP actually hand macrdp a mic
-//! over a server-direction `AUDIO_INPUT` DVC, before any `AudioServerPlugIn` work.
-//! The reference is FreeRDP's server `channels/audin/server/audin_main.c` — this
+//! Full protocol negotiation, then the client's mic PCM is handed to the
+//! [`AudinSampleSink`] the factory supplies (macrdp's feeds the "macrdp Microphone"
+//! Core Audio device). To be replaced by upstream's `ironrdp-rdpeai` at the next
+//! IronRDP version bump. The reference is FreeRDP's server `channels/audin/server/audin_main.c` — this
 //! mirrors its state machine + wire format. Gated behind
 //! `--enable-microphone-redirection`; when the factory isn't installed the channel
 //! is never advertised and the build is byte-identical.
@@ -204,8 +203,8 @@ pub trait AudinSampleSink: Send {
 // ---------------------------------------------------------------------------
 
 /// MS-RDPEAI processor: drives Version → Formats → Open negotiation, then consumes
-/// the client's inbound mic Data PDUs. Phase 0 logs the stream (the go/no-go gate);
-/// a `Some(sink)` receives the audio for the macOS virtual-mic path (Phase 2).
+/// the client's inbound mic Data PDUs, handing them to the sink (with `None`,
+/// the audio is only logged and dropped).
 pub struct AudinServer {
     sink: Option<Box<dyn AudinSampleSink>>,
     /// The format chosen in the Open PDU (the first the client offered).
@@ -300,14 +299,13 @@ impl DvcProcessor for AudinServer {
                 if let Some(sink) = self.sink.as_mut() {
                     sink.on_data(body);
                 }
-                // Phase-0 go/no-go: prove the client streams the mic. Log the first
-                // packet loudly, then throttle to ~every 200 packets (~a few sec).
+                // Log the first packet, then throttle to ~every 200 packets (~2 s).
                 if self.data_packets == 1 || self.data_packets % 200 == 0 {
                     info!(
                         packets = self.data_packets,
                         total_bytes = self.data_bytes,
                         last_len = body.len(),
-                        "MS-RDPEAI receiving microphone audio from the client (Phase-0 GREEN)"
+                        "MS-RDPEAI receiving microphone audio from the client"
                     );
                 }
                 Ok(Vec::new())

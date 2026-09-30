@@ -162,35 +162,31 @@ then delete; promote a parked item to *In flight* when work actually starts.
       loaded by coreaudiod independently of which macrdp build is installed.
     - [ ] Disconnect cleanup + silence/mute handling.
     - [ ] Docs before merge: no mic entry yet in `docs/cli.md`, `docs/features.md`, `docs/architecture.md` or
-      `docs/configuration.md`. Stale "Phase 0" / "440 Hz test tone" wording remains in source comments and
-      strings: `packaging/install-audio-plugin.sh`'s closing message, `audioplugin/macrdp_mic.c`'s header and
-      `ring_map` log lines, the `src/audin/mod.rs` module doc, and the `vendor/ironrdp-server/src/audin.rs`
-      header. (Divergence (24)'s entry in the vendored `CLAUDE.md` was refreshed 2026-09-16.)
-    - [ ] **Verify the 2026-09-12 code-review findings — UNVERIFIED.** A review aimed at PR #183 ran against this
-      branch by mistake; nothing below has been checked against the code yet. Security first:
-      - the shm ring is created `0666` (with an explicit `fchmod`) and never `shm_unlink`ed, so any local
-        account could record or inject the redirected mic — broader than the same-user trust boundary in
-        `docs/macos-gotchas.md`, which doesn't list this channel; `O_CREAT` without `O_EXCL` also allows a
-        pre-created segment;
-      - the plug-in's `DoIOOperation` trusts `ring_frames`/`channels` read from that segment, a possible
-        out-of-bounds read inside `coreaudiod`;
-      - `StopIO` unmaps `gRing` while the real-time `DoIOOperation` may still be reading it;
-      - `build_processor` maps the ring for every connection, including a preemption candidate (two writers
-        on a single-producer ring) and before authentication.
-      Correctness: the server advertises 48 kHz but the ring is fixed at 44.1 kHz, and the client's first
-      offered format is opened without checking rate/bits/codec; `MACRDP_MIC_DUMP=0` (any value) enables the
-      dump and silences the device, and `MIC_DUMP` isn't bridged from `config.env`; `ring_map` never retries
-      if the device opens before the segment exists; the Rust/C ring-layout test asserts copied numbers
-      rather than the header; `WavDumpSink::on_format` doesn't finalize or reset on renegotiation; the 250 ms
-      latency-skip threshold sits below the documented socket-stall magnitudes; `micfeed_test.c` still has the
-      ftruncate-on-reuse bug the Rust side fixed. Full list in the `project_microphone_redirection` memory.
+      `docs/configuration.md`. (The stale "Phase 0" / "440 Hz test tone" wording was cleaned up 2026-09-30.)
+    - [x] **2026-09-30 — the code-review findings verified and fixed (Mac side).** Confirmed + fixed: the shm
+      ring is now version 2 — created only once the client negotiates the mic (never pre-auth), exclusively,
+      **0644**, wiped + unlinked at session end, with a random session id; the plug-in maps it **read-only**
+      (private read position), validates the header and indexes with compile-time sizes (the OOB read), maps
+      and follows segments from a 1 s background timer (the never-retry bug), and never unmaps from `StopIO`
+      (retired mappings are unmapped ≥500 ms later); `MACRDP_MIC_DUMP` uses the camera's `=1`/`true` rule and
+      is bridged from `config.env`; `WavDumpSink` finalizes + resets on renegotiation; the Rust tests parse
+      the C header's `#define`s and the header `_Static_assert`s the offsets; `micfeed_test.c` speaks v2; an
+      `fstat` log read uninitialized memory. Trust boundary documented in `docs/macos-gotchas.md` (5): other
+      local accounts can still READ a live stream — POSIX shm has no finer grant. Two macOS facts found on
+      the way: `shm_open` applies its mode exactly (no umask) and `fchmod` fails with EINVAL on shm (the old
+      `fchmod` was silently failing); `fstat` reports inode 0 for shm objects (hence the session id).
+      **Needs a live re-test** (install the plug-in, record the device with a real client's mic).
+      Deferred: the 250 ms latency-skip → a smoothing ramp (tuning, not a bug). Left to the protocol-layer
+      switch: the 48 kHz advertisement / unchecked client format and the version parsing (both in the
+      vendored `audin.rs`, which upstream's crate replaces) — upstream must be told to accept only 44.1 kHz,
+      or a resampler added.
     - [ ] Renumber vendored divergence (24) → (25) when rebasing onto a `main` that carries PR #183 (which
       keeps (24)). #182 was held for the pin bump on 2026-09-17 and never lands its divergence, so (25) is
       free. Marker at the divergence heading.
-    - [ ] Weigh the upstream overlap before merging: the `ironrdp-rdpeai` crate (Devolutions/IronRDP#1645) already
-      provides `RdpeaiServer`, and #1946 (open) wires it into `ironrdp-server`. Adopting it may beat carrying
-      `AudinServer` as a divergence.
-    - [ ] Rebase: the branch is local-only, 17 commits ahead of and 6 behind `main` (2026-09-16).
+    - [ ] **Decided 2026-09-30: adopt upstream's `ironrdp-rdpeai`** (#1645, merged 08-12; server integration
+      #1946, merged 09-22 — both after our 08-03 pin) at the next IronRDP version bump, in place of the
+      vendored `AudinServer`. The mic merges with the bump; no new vendored divergence lands on `main`.
+    - [x] Rebased onto `main` 2026-09-30 (20 commits; backup branch `feat/microphone-redirection-phase0-pre-p3`).
   - **Module placement:** new `src/audio_input/` (`mod.rs` = the `AUDIO_INPUT` DVC backend + factory/policy,
     `feed.rs` = the shared-memory producer into the HAL plug-in), mirroring `src/camera/`. The plug-in bundle:
     `gui/Sources/macrdpmic` (an `AudioServerPlugIn` `.driver`) + a `packaging/make-audio-plugin.sh` +

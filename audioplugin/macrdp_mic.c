@@ -14,12 +14,10 @@
 // host-controller / DriverKit route) — it installs like the IFD handler: a file
 // copy into a system dir (one privileged step) plus a coreaudiod restart.
 //
-// P2a (this file's current behavior): the device plays an internal, low-amplitude
-// 440 Hz test tone, so the whole novel path can be verified — the bundle builds
-// without Xcode, coreaudiod loads it, and "macrdp Microphone" appears in Audio
-// MIDI Setup and app input pickers, delivering the tone — BEFORE any macrdp feed
-// is wired. P2b will replace the tone in DoIOOperation with a read from a
-// shared-memory ring that macrdp's AudinSampleSink writes the received PCM into.
+// DoIOOperation reads the client's mic from a shared-memory ring that macrdp's
+// SharedMemSink writes (layout, ownership and permissions: macrdp_mic_ring.h).
+// The plug-in maps it read-only, off the real-time thread, and validates it
+// before use. With no session streaming, the device delivers silence.
 
 #include <CoreAudio/AudioServerPlugIn.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -34,21 +32,21 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <dispatch/dispatch.h>
 
 #include "macrdp_mic_ring.h"
 
 // ---------------------------------------------------------------------------
 // Device shape. One interleaved Float32 input stream. Stereo for the broadest
-// app compatibility (a mono source is upmixed on the feed side in P2b). 44100 Hz
-// matches the PCM the Phase-0 client streamed; resampling to whatever the client
-// actually sends lands in P2c.
+// app compatibility (a mono source is upmixed on the feed side). 44100 Hz, the
+// same as the feed ring (MACRDP_MIC_SAMPLE_RATE).
 // ---------------------------------------------------------------------------
 #define kSampleRate        44100.0
 #define kChannelsPerFrame  2u
 #define kBitsPerChannel    32u
 #define kBytesPerFrame     (kChannelsPerFrame * (kBitsPerChannel / 8u))
-// Frames between zero timestamps = the virtual ring size (also the shm ring in
-// P2b). A power of two keeps the P2b index masking cheap. ~1.49 s at 44100.
+// Frames between zero timestamps (the device clock's period, ~1.49 s at 44100).
+// Unrelated to the feed ring's capacity, though it happens to be the same size.
 #define kRingFrames        65536u
 
 #define kDeviceUID     "macrdpMicrophone_UID"
@@ -105,11 +103,20 @@ static UInt64 gAnchorHostTime = 0;
 static Float64 gHostTicksPerFrame = 0.0;
 static UInt64 gClockSeed = 1;
 
-// Shared-memory feed from macrdp (P2b). Mapped at StartIO (off the real-time IO
-// thread), read in DoIOOperation. NULL until macrdp is running and streaming a
-// mic — DoIOOperation then falls back to the internal test tone.
-static MacrdpMicRing* gRing = NULL;
-static int gRingFd = -1;
+// Shared-memory feed from macrdp. The mapping is managed entirely off the
+// real-time IO thread by a 1 s timer on gFeedQueue (feed_tick), which maps the
+// segment when a session starts, follows it when a newer session replaces it, and
+// drops it when the session ends or the device stops. DoIOOperation only
+// atomically loads the current pointer. A replaced mapping is not unmapped
+// immediately: it is parked in gRetired and unmapped on the NEXT tick, ~1 s
+// later, long after any IO cycle that loaded it has returned. So the IO thread
+// never reads unmapped memory, and nothing is unmapped from StopIO.
+static _Atomic(MacrdpMicRing*) gRing = NULL;
+static MacrdpMicRing* gRetired = NULL;       // feed queue only
+static uint64_t gRetiredAt = 0;              // mach_absolute_time of the retirement
+static uint64_t gRetireGraceTicks = 0;       // 500 ms in host ticks (set at Initialize)
+static dispatch_queue_t gFeedQueue = NULL;
+static dispatch_source_t gFeedTimer = NULL;
 
 static void ensure_log(void) {
     if (gLog == NULL) {
@@ -117,48 +124,125 @@ static void ensure_log(void) {
     }
 }
 
-// Map the macrdp mic ring if it exists (the writer creates + sizes + initializes
-// it). Reader-only: never creates the segment, never resizes it — so a device
-// opened before macrdp is running simply finds nothing and plays the tone. Runs
-// on StartIO, i.e. NOT the real-time IO thread, so the blocking syscalls are ok.
-static void ring_map(void) {
-    if (gRing != NULL) {
-        return;
-    }
-    int fd = shm_open(MACRDP_MIC_SHM_NAME, O_RDWR, 0666);
+// Read-only map of the segment the name currently refers to, or NULL. Rejects
+// anything that isn't a well-formed version-2 ring: wrong size, writable by
+// anyone but its owner, or a header whose sizes differ from this build's. The IO
+// path then indexes with the compile-time constants, never the header's values.
+// Runs on the feed queue — blocking syscalls are fine here.
+static MacrdpMicRing* feed_map(void) {
+    int fd = shm_open(MACRDP_MIC_SHM_NAME, O_RDONLY);
     if (fd < 0) {
-        os_log(gLog, "macrdp-mic: no feed ring (%{public}s: %d) — using test tone",
-               MACRDP_MIC_SHM_NAME, errno);
-        return;
+        return NULL;   // no session streaming — the normal idle case
     }
     struct stat st;
-    if (fstat(fd, &st) != 0 || (size_t)st.st_size < sizeof(MacrdpMicRing)) {
-        os_log(gLog, "macrdp-mic: feed ring too small (%lld < %zu) — test tone",
-               (long long)st.st_size, sizeof(MacrdpMicRing));
+    if (fstat(fd, &st) != 0) {
+        os_log(gLog, "macrdp-mic: fstat of the feed failed (%d)", errno);
         close(fd);
-        return;
+        return NULL;
     }
-    void* p = mmap(NULL, sizeof(MacrdpMicRing), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    // Log a rejection once, not on every tick while it persists.
+    static Boolean sLoggedReject = false;
+    if ((size_t)st.st_size < sizeof(MacrdpMicRing) || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        if (!sLoggedReject) {
+            os_log(gLog, "macrdp-mic: ignoring a feed with size %lld / mode %o",
+                   (long long)st.st_size, (unsigned)(st.st_mode & 0777));
+            sLoggedReject = true;
+        }
+        close(fd);
+        return NULL;
+    }
+    void* p = mmap(NULL, sizeof(MacrdpMicRing), PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
     if (p == MAP_FAILED) {
-        os_log(gLog, "macrdp-mic: feed ring mmap failed (%d) — test tone", errno);
-        close(fd);
-        return;
+        os_log(gLog, "macrdp-mic: mapping the feed failed (%d)", errno);
+        return NULL;
     }
-    gRingFd = fd;
-    gRing = (MacrdpMicRing*)p;
-    os_log(gLog, "macrdp-mic: feed ring mapped (magic=0x%x rate=%u ch=%u) — reading mic feed",
-           gRing->magic, gRing->sample_rate, gRing->channels);
+    MacrdpMicRing* ring = (MacrdpMicRing*)p;
+    uint32_t magic = atomic_load_explicit((_Atomic uint32_t*)&ring->magic, memory_order_acquire);
+    if (magic != MACRDP_MIC_MAGIC || ring->version != MACRDP_MIC_VERSION ||
+        ring->sample_rate != MACRDP_MIC_SAMPLE_RATE || ring->channels != MACRDP_MIC_CHANNELS ||
+        ring->ring_frames != MACRDP_MIC_RING_FRAMES || ring->session_id == 0) {
+        if (magic == MACRDP_MIC_MAGIC && !sLoggedReject) {
+            os_log(gLog, "macrdp-mic: ignoring a feed with version %u rate %u ch %u frames %u",
+                   ring->version, ring->sample_rate, ring->channels, ring->ring_frames);
+            sLoggedReject = true;
+        }
+        munmap(p, sizeof(MacrdpMicRing));
+        return NULL;
+    }
+    sLoggedReject = false;
+    return ring;
 }
 
-static void ring_unmap(void) {
-    if (gRing != NULL) {
-        munmap((void*)gRing, sizeof(MacrdpMicRing));
-        gRing = NULL;
+// The session_id of the segment the name refers to now, or 0.
+static uint64_t feed_current_session_id(void) {
+    MacrdpMicRing* ring = feed_map();
+    if (ring == NULL) {
+        return 0;
     }
-    if (gRingFd >= 0) {
-        close(gRingFd);
-        gRingFd = -1;
+    uint64_t id = ring->session_id;
+    munmap((void*)ring, sizeof(MacrdpMicRing));
+    return id;
+}
+
+// Swap the published mapping, parking the old one for the next tick to unmap.
+static void feed_publish(MacrdpMicRing* next) {
+    MacrdpMicRing* prev = atomic_exchange_explicit(&gRing, next, memory_order_acq_rel);
+    if (prev != NULL) {
+        gRetired = prev;
+        gRetiredAt = mach_absolute_time();
     }
+    if (next != NULL) {
+        os_log(gLog, "macrdp-mic: feed mapped — reading the client's mic");
+    } else if (prev != NULL) {
+        os_log(gLog, "macrdp-mic: feed released");
+    }
+}
+
+// Once a second on the feed queue, and once more on StartIO.
+static void feed_tick(void) {
+    if (gRetired != NULL) {
+        // Unmap a retired mapping only once it has been retired for 500 ms — far
+        // longer than any IO cycle that loaded the pointer before the swap. Until
+        // then, publish nothing new (there is one retirement slot).
+        if (mach_absolute_time() - gRetiredAt < gRetireGraceTicks) {
+            return;
+        }
+        munmap((void*)gRetired, sizeof(MacrdpMicRing));
+        gRetired = NULL;
+    }
+    pthread_mutex_lock(&gStateMutex);
+    Boolean running = gDeviceRunning;
+    pthread_mutex_unlock(&gStateMutex);
+
+    MacrdpMicRing* cur = atomic_load_explicit(&gRing, memory_order_acquire);
+    if (!running) {
+        if (cur != NULL) {
+            feed_publish(NULL);
+        }
+        return;
+    }
+    if (cur != NULL) {
+        uint32_t magic = atomic_load_explicit((_Atomic uint32_t*)&cur->magic, memory_order_acquire);
+        // Still the live session's segment: nothing to do.
+        if (magic == MACRDP_MIC_MAGIC && feed_current_session_id() == cur->session_id) {
+            return;
+        }
+    }
+    // No feed yet, the session ended, or a newer session replaced the segment.
+    MacrdpMicRing* next = feed_map();
+    if (next != NULL || cur != NULL) {
+        feed_publish(next);
+    }
+}
+
+static void feed_start_timer(void) {
+    gFeedQueue = dispatch_queue_create("com.clintcan.macrdp.mic.feed", DISPATCH_QUEUE_SERIAL);
+    gFeedTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, gFeedQueue);
+    dispatch_source_set_timer(gFeedTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                              NSEC_PER_SEC, NSEC_PER_SEC / 10);
+    dispatch_source_set_event_handler(gFeedTimer, ^{ feed_tick(); });
+    dispatch_resume(gFeedTimer);
 }
 
 // ===========================================================================
@@ -312,6 +396,9 @@ static OSStatus MacRDPMic_Initialize(AudioServerPlugInDriverRef inDriver, AudioS
     mach_timebase_info(&tb);
     Float64 nanosPerFrame = 1.0e9 / kSampleRate;
     gHostTicksPerFrame = nanosPerFrame * (Float64)tb.denom / (Float64)tb.numer;
+    gRetireGraceTicks = (uint64_t)(500.0e6 * (Float64)tb.denom / (Float64)tb.numer);
+
+    feed_start_timer();
 
     os_log(gLog, "macrdp-mic: Initialize (device \"%{public}s\", %{public}.0f Hz, %u ch)",
            kDeviceName, kSampleRate, kChannelsPerFrame);
@@ -442,7 +529,7 @@ static OSStatus MacRDPMic_IsPropertySettable(AudioServerPlugInDriverRef inDriver
     if (inAddress == NULL || outIsSettable == NULL) {
         return kAudioHardwareIllegalOperationError;
     }
-    // Nothing is client-settable in P2a — the format + rate are fixed. Stream
+    // Nothing is client-settable — the format + rate are fixed. Stream
     // "IsActive" could be settable, but we keep the single stream always active.
     if (!MacRDPMic_HasProperty(inDriver, inObjectID, inClientProcessID, inAddress)) {
         return kAudioHardwareUnknownPropertyError;
@@ -501,7 +588,7 @@ static OSStatus property_size(AudioObjectID inObjectID, const AudioObjectPropert
                     *outSize = (a->mScope == kAudioObjectPropertyScopeOutput) ? 0 : sizeof(AudioObjectID);
                     return noErr;
                 case kAudioObjectPropertyControlList:
-                    *outSize = 0; return noErr; // no controls in P2a
+                    *outSize = 0; return noErr; // no controls
                 case kAudioDevicePropertyNominalSampleRate:
                     *outSize = sizeof(Float64); return noErr;
                 case kAudioDevicePropertyAvailableNominalSampleRates:
@@ -691,7 +778,7 @@ static OSStatus MacRDPMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, A
 static OSStatus MacRDPMic_SetPropertyData(AudioServerPlugInDriverRef inDriver, AudioObjectID inObjectID, pid_t inClientProcessID, const AudioObjectPropertyAddress* inAddress, UInt32 inQualifierDataSize, const void* inQualifierData, UInt32 inDataSize, const void* inData) {
     (void)inDriver; (void)inObjectID; (void)inClientProcessID; (void)inAddress;
     (void)inQualifierDataSize; (void)inQualifierData; (void)inDataSize; (void)inData;
-    // Nothing settable in P2a.
+    // Nothing settable.
     return kAudioHardwareUnsupportedOperationError;
 }
 
@@ -708,11 +795,9 @@ static OSStatus MacRDPMic_StartIO(AudioServerPlugInDriverRef inDriver, AudioObje
         gAnchorHostTime = mach_absolute_time();
         gClockSeed++;
         gDeviceRunning = true;
-        // Map the macrdp feed ring now (off the real-time IO thread). If macrdp
-        // isn't streaming, this no-ops and DoIOOperation plays the test tone.
-        ring_map();
-        os_log(gLog, "macrdp-mic: StartIO (first client) — clock anchored, feed %{public}s",
-               gRing != NULL ? "mapped" : "absent (test tone)");
+        // Look for the feed now rather than at the next tick.
+        dispatch_async(gFeedQueue, ^{ feed_tick(); });
+        os_log(gLog, "macrdp-mic: StartIO (first client) — clock anchored");
     }
     gIOClientsRunning++;
     pthread_mutex_unlock(&gStateMutex);
@@ -730,7 +815,8 @@ static OSStatus MacRDPMic_StopIO(AudioServerPlugInDriverRef inDriver, AudioObjec
     }
     if (gIOClientsRunning == 0) {
         gDeviceRunning = false;
-        ring_unmap();
+        // The feed is released by the next tick, never here: an IO cycle may
+        // still hold the pointer.
         os_log(gLog, "macrdp-mic: StopIO (last client) — device idle");
     }
     pthread_mutex_unlock(&gStateMutex);
@@ -778,28 +864,39 @@ static OSStatus MacRDPMic_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
 
     Float32* out = (Float32*)ioMainBuffer;
 
-    // P2b: if macrdp's feed ring is mapped and initialized, drain it into the
-    // input buffer (single-consumer). Otherwise fall back to the P2a test tone,
-    // so the device is never silent-with-no-explanation during bring-up.
-    MacrdpMicRing* ring = gRing;
-    // Acquire-load the magic so the header the writer published before it (rate,
-    // channels, ring_frames) is visible — release/acquire pair with the writer.
+    // Read the client's mic from macrdp's feed, if one is mapped and live. The
+    // read position is private to this thread — the segment is read-only to us —
+    // and every index uses the compile-time ring size and channel count, so the
+    // segment's contents can't steer a read outside the mapping.
+    static uint64_t sSession = 0;   // the segment sRead belongs to
+    static uint64_t sRead = 0;
+    MacrdpMicRing* ring = atomic_load_explicit(&gRing, memory_order_acquire);
+    // Acquire-load the magic so the header the writer published before it is
+    // visible; 0 means the session ended.
     uint32_t magic = (ring != NULL)
         ? atomic_load_explicit((_Atomic uint32_t*)&ring->magic, memory_order_acquire)
         : 0u;
-    if (ring != NULL && magic == MACRDP_MIC_MAGIC && ring->ring_frames != 0) {
-        const uint32_t cap = ring->ring_frames;       // power of two
-        const uint32_t rch = ring->channels;
+    if (ring != NULL && magic == MACRDP_MIC_MAGIC) {
+        const uint64_t cap = MACRDP_MIC_RING_FRAMES;       // power of two
         uint64_t w = atomic_load_explicit(&ring->write_frames, memory_order_acquire);
-        uint64_t r = atomic_load_explicit(&ring->read_frames, memory_order_relaxed);
-        uint64_t avail = (w > r) ? (w - r) : 0;
+        uint64_t targetLatency = (kTargetLatencyFrames < cap) ? (uint64_t)kTargetLatencyFrames : cap / 2;
+        uint64_t maxLatency = (kMaxLatencyFrames < cap) ? (uint64_t)kMaxLatencyFrames : cap;
+        if (ring->session_id != sSession) {
+            // A new segment (a new session): start near the freshest audio. Keyed
+            // on the session id, not the address — a new mapping can reuse an
+            // old one's address.
+            sSession = ring->session_id;
+            sRead = (w > targetLatency) ? w - targetLatency : 0;
+        }
+        uint64_t r = sRead;
+        if (r > w) {
+            r = w;   // can't read ahead of the writer
+        }
+        uint64_t avail = w - r;
 
-        // Bound latency: on a large backlog (startup — the reader maps mid-stream
-        // with the writer already ahead — or after a stall/drift) skip ahead to
-        // keep only ~kTargetLatencyFrames of the freshest audio, so the mic stays
-        // responsive. Clamp the target to the ring so a tiny ring can't underflow.
-        uint64_t maxLatency = (kMaxLatencyFrames < cap) ? (uint64_t)kMaxLatencyFrames : (uint64_t)cap;
-        uint64_t targetLatency = (kTargetLatencyFrames < cap) ? (uint64_t)kTargetLatencyFrames : (uint64_t)(cap / 2);
+        // Bound latency: on a large backlog (after a stall or drift) skip ahead to
+        // keep only ~kTargetLatencyFrames of the freshest audio. Anything older
+        // than the ring holds has been overwritten anyway.
         if (avail > maxLatency) {
             r = w - targetLatency;
             avail = targetLatency;
@@ -807,11 +904,9 @@ static OSStatus MacRDPMic_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
         uint32_t toRead = (avail < (uint64_t)inIOBufferFrameSize) ? (uint32_t)avail : inIOBufferFrameSize;
 
         for (uint32_t i = 0; i < toRead; i++) {
-            uint64_t idx = (r + i) & (uint64_t)(cap - 1);
-            const float* src = &ring->samples[idx * rch];
+            const float* src = &ring->samples[((r + i) & (cap - 1)) * MACRDP_MIC_CHANNELS];
             for (uint32_t c = 0; c < kChannelsPerFrame; c++) {
-                // Map device channel c from the ring (mono ring → duplicate ch 0).
-                out[i * kChannelsPerFrame + c] = (c < rch) ? src[c] : src[0];
+                out[i * kChannelsPerFrame + c] = src[c < MACRDP_MIC_CHANNELS ? c : 0];
             }
         }
         // Underrun: silence the frames the writer hasn't produced yet.
@@ -820,7 +915,7 @@ static OSStatus MacRDPMic_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
                 out[i * kChannelsPerFrame + c] = 0.0f;
             }
         }
-        atomic_store_explicit(&ring->read_frames, r + toRead, memory_order_release);
+        sRead = r + toRead;
         return noErr;
     }
 

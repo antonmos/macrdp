@@ -2521,6 +2521,7 @@ fn args_from_config(path: &Path) -> Result<Args> {
         // H.264 + PNG frame dumps to $TMPDIR. Env-only like the USB knobs above;
         // bridged so it can be flipped in config.env when debugging the camera.
         ("CAMERA_DUMP", "MACRDP_CAMERA_DUMP"),
+        ("MIC_DUMP", "MACRDP_MIC_DUMP"),
         // #168 stopgap: when --detach-primary can't re-enable the physical panel
         // on disconnect (macOS 26.x won't do it in-process), restart under
         // launchd to restore it. Env-read at the disconnect edge.

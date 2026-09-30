@@ -2,17 +2,16 @@
 //!
 //! The RDP client redirects its microphone (a standalone mic, or a webcam's
 //! built-in mic) over the `AUDIO_INPUT` dynamic virtual channel; macrdp is the
-//! server and receives it. **Phase 0 (this module): negotiate the channel and log
-//! the client streaming its mic** — the go/no-go gate proving mstsc/FreeRDP hand
-//! macrdp a mic over a server-direction DVC, before any macOS virtual-audio work.
+//! server and receives it, then presents it to macOS apps as a real input device,
+//! "macrdp Microphone" — an `AudioServerPlugIn` HAL plug-in
+//! (`audioplugin/macrdp_mic.c`) that reads the PCM from a shared-memory ring this
+//! module's `SharedMemSink` writes.
 //!
 //! The protocol state machine lives in the vendored `ironrdp-server`
-//! (`src/audin.rs`, divergence 22); this is just the cross-platform factory that
-//! installs it, gated behind `--enable-microphone-redirection`. Phase 2 will add a
-//! macOS virtual microphone (an `AudioServerPlugIn` HAL plug-in fed via
-//! shared-memory) behind the vendored `AudinSampleSink` seam; `build_processor`
-//! will then hand the processor a `Some(sink)` instead of `None`. See
-//! `TODO.md` ("Microphone / audio-input redirection").
+//! (`src/audin.rs`); this is the cross-platform factory that installs it, gated
+//! behind `--enable-microphone-redirection`, and picks the sink behind the
+//! vendored `AudinSampleSink` seam. See `TODO.md` ("Microphone / audio-input
+//! redirection").
 
 use ironrdp_server::{AudinSampleSink, AudinServer, AudinServerFactory};
 
@@ -22,9 +21,8 @@ use wav_dump::WavDumpSink;
 #[cfg(target_os = "macos")]
 mod shm_sink;
 
-/// The macrdp MS-RDPEAI factory. Cross-platform — Phase 0 has no platform code (it
-/// only negotiates + logs). Phase 2's virtual-mic sink sits behind
-/// `AudinSampleSink`, built here.
+/// The macrdp MS-RDPEAI factory. Cross-platform; the virtual-mic sink it builds is
+/// macOS-only.
 pub struct MacAudin;
 
 impl MacAudin {
@@ -42,17 +40,16 @@ impl Default for MacAudin {
 impl AudinServerFactory for MacAudin {
     fn build_processor(&self) -> AudinServer {
         // Sink selection:
-        //  * `MACRDP_MIC_DUMP=1` → WAV dump under `$TMPDIR` (Phase-1 debug: play
-        //    it back to verify the decode; the audio analogue of
-        //    `MACRDP_CAMERA_DUMP`). Overrides the feed.
-        //  * otherwise (macOS) → the Phase-2 `SharedMemSink` feed into the
-        //    "macrdp Microphone" HAL plug-in's shared ring. If the ring can't be
-        //    mapped, fall back to `None` (negotiate + drop) so a mic setup
-        //    problem never kills the session.
+        //  * `MACRDP_MIC_DUMP=1` → WAV dump under `$TMPDIR` (debug: play it back to
+        //    verify the decode; the audio analogue of `MACRDP_CAMERA_DUMP`).
+        //    Overrides the feed.
+        //  * otherwise (macOS) → `SharedMemSink`, feeding the "macrdp Microphone"
+        //    plug-in. It creates nothing until the client negotiates the mic, so a
+        //    connection that never gets that far (including an unauthenticated
+        //    one — the channel can't open before the session is connected) leaves
+        //    no trace.
         //  * non-macOS → `None` (there is no virtual mic to feed).
-        let sink: Option<Box<dyn AudinSampleSink>> = if std::env::var_os("MACRDP_MIC_DUMP")
-            .is_some()
-        {
+        let sink: Option<Box<dyn AudinSampleSink>> = if mic_dump_enabled() {
             tracing::info!(
                 "mic: MACRDP_MIC_DUMP set — dumping received PCM to WAV, NOT feeding the virtual mic"
             );
@@ -60,19 +57,7 @@ impl AudinServerFactory for MacAudin {
         } else {
             #[cfg(target_os = "macos")]
             {
-                match shm_sink::SharedMemSink::new() {
-                    Some(s) => {
-                        tracing::info!("mic: feeding the macrdp Microphone shared ring");
-                        Some(Box::new(s) as Box<dyn AudinSampleSink>)
-                    }
-                    None => {
-                        tracing::warn!(
-                            "mic: could not map the shared ring — audio dropped (is the macrdp \
-                             Microphone plug-in installed? mic still negotiates)"
-                        );
-                        None
-                    }
-                }
+                Some(Box::new(shm_sink::SharedMemSink::new()))
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -81,4 +66,13 @@ impl AudinServerFactory for MacAudin {
         };
         AudinServer::new(sink)
     }
+}
+
+/// `MACRDP_MIC_DUMP=1` (or `true`) — the same rule as `MACRDP_CAMERA_DUMP`, so
+/// `MACRDP_MIC_DUMP=0` means off rather than on.
+pub(crate) fn mic_dump_enabled() -> bool {
+    matches!(
+        std::env::var("MACRDP_MIC_DUMP").as_deref(),
+        Ok("1") | Ok("true")
+    )
 }
