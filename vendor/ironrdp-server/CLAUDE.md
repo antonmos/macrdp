@@ -2007,4 +2007,4 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     `/microphone`) opened AUDIO_INPUT, negotiated PCM mono 44.1k/16, and streamed the
     mic continuously (5000+ packets, ~2.2 MB). Phase 2 — the macOS AudioServerPlugIn
     virtual mic behind `AudinSampleSink` — is DONE, live- and ear-verified 2026-09-01;
-    P3 (packaging, cleanup, docs) remains.
+    P3 (packaging, cleanup, docs) done. **SHIPPED in v0.9.10 (2026-09-30, #191).**
