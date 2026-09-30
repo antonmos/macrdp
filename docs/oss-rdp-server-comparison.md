@@ -38,7 +38,7 @@ one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §7)
 | **UDP multitransport** — actually carry channel data over UDP (MS-RDPEMT/RDPEUDP) | **First known** — upstream IronRDP's equivalent is an **open PR** (#1954), see §7 | High today; **re-check when #1954 merges** |
 | **Camera redirection** — client webcam → **a real OS camera device**, end to end (MS-RDPECAM) | **First known** *(state it precisely — see below)* | High after source read |
 | "First/only **native macOS** RDP server" | **❌ REFUTED — do not claim** | High |
-| **Microphone redirection** — present a client mic as a real OS *input* device (MS-RDPEAI) | **❌ Not a first — do not claim** (xrdp does it) | High after source read |
+| **Microphone redirection** — present a client mic as a real OS *input* device (MS-RDPEAI) | **❌ Not a first — do not claim** (xrdp, gnome-remote-desktop and kmsrdp do it) | High after source read |
 | **H.264/EGFX** server-side encoding | **Not a first** — don't claim | High |
 | Smart-card (MS-RDPESC) server direction; drive-as-a-real-mount | **Unadjudicated** — assert nothing | — |
 
@@ -195,8 +195,8 @@ code since). x6nux does have audio and clipboard; RDPonMAC has only stubs for bo
 
 ## 5. Microphone / audio-input redirection (MS-RDPEAI) — NOT a first
 
-**Do not claim macrdp is the first OSS RDP server to redirect the client's microphone — xrdp
-already does it, end to end.** Added + verified by direct source read **2026-09-01** (prompted
+**Do not claim macrdp is the first OSS RDP server to redirect the client's microphone — xrdp,
+gnome-remote-desktop and kmsrdp already do it, end to end.** Added + verified by direct source read **2026-09-01** (prompted
 by macrdp's own MS-RDPEAI feature landing; the mistake would have been easy to make since USB /
 UDP / camera above *are* firsts).
 
@@ -215,6 +215,18 @@ bar, the same one macrdp meets on macOS with a Core Audio input device):
   Linux apps on the server. The xrdp wiki states the client→server path is "implemented as per
   [MS-RDPEAI] … interoperable with any RDP client."
 
+**gnome-remote-desktop does it too, since GNOME 46** (commit `28d772a2` "rdp: Add class for
+audio input redirection" — authored 2022-07-09, committed 2023-12-16, first in the 46.alpha tag;
+not in 45.0). Verified by source read 2026-09-30:
+`src/grd-rdp-dvc-audio-input.c` negotiates MS-RDPEAI (A-law preferred, else 16-bit PCM; both
+fixed at 44.1 kHz stereo) and publishes a **PipeWire node with `media.class = Audio/Source`**
+named "GNOME Remote Desktop Audio Input" — a real recordable input device, fed from an in-process
+queue that drops frames older than 200 ms.
+
+**FreeRDP's shadow server negotiates MS-RDPEAI but drops the audio.** `server/shadow/shadow_audin.c`
+hands each sample batch to a platform callback (`AudinServerReceiveSamples`), and none of the
+X11 / Mac / Win shadow subsystems implements it (checked 2026-09-30) — protocol endpoint only.
+
 **Upstream IronRDP has it too, server side, since September 2026.** The `ironrdp-rdpeai`
 protocol crate landed on 2026-08-12 ([#1645](https://github.com/Devolutions/IronRDP/pull/1645))
 and its `ironrdp-server` integration on 2026-09-22
@@ -222,19 +234,43 @@ and its `ironrdp-server` integration on 2026-09-22
 application supplies the audio sink), not a device. macrdp plans to adopt it in place of its own
 vendored copy at the next IronRDP version bump.
 
+**kmsrdp does it too (Linux, own RDP stack, since 2026-07-17)** — `yamamo-to/kmsrdp`, "Initial
+release" 2026-07-17, with its own `rdpcore-rdpeai` crate (the README states "no `ironrdp`
+dependency"). It plays the client's mic into a PulseAudio `module-null-sink` named `kmsrdp_mic`,
+and apps select **`kmsrdp_mic.monitor`** as their input (`kmsrdp/src/pulse_util.rs`) — a
+monitor-of-a-null-sink workaround rather than a first-class source, but a recordable input all the
+same. Verified by source read 2026-09-30.
+
+**Among IronRDP-based servers, macrdp is the only one found that presents the mic as a device**
+(survey 2026-09-30: GitHub code search for repos implementing an IronRDP server, then a shallow
+clone + grep of each for `rdpeai` / `audin` / `AUDIO_INPUT` / `microphone`). Upstream IronRDP
+ships only the protocol side — the `RdpeaiServerFactory` / `RdpeaiServerBackend` hook (#1946) —
+and no example server uses it. Of the downstream servers checked: **lamco-rdp-server**
+(`wayland-rdp` roadmap: "Microphone input — ❌ Not started, P3"), **x6nux/macrdp** (design doc:
+"AUDIN … Deferred to a future phase"), and **hypr-rdp, qemu-display (qemu-rdp), ARISU, otto,
+wrdp, mrdpd, mRDP, tddy-coder, MobaRust, crosvm, taomni** have no server-side mic code (taomni's
+matches are local push-to-talk capture). `racko-remote` is a fork of the IronRDP repo carrying
+upstream's `rdpeai.rs` unchanged, not a server that uses it. Clients (`ironrdp-client`, oxideterm,
+tabby-rdp) implement the *client* side, which is irrelevant here. Caveat: only repos GitHub's code
+index surfaced were checked; a private or unindexed IronRDP server could exist.
+
 **FreeRDP is not the relevant precedent either way:** its `audin` is *client-side* capture (the
 `/microphone` flag), and FreeRDP has no device-presenting server, so it neither refutes nor
-supports a first claim. xrdp alone settles it.
+supports a first claim. xrdp, gnome-remote-desktop and kmsrdp settle it.
 
 **The only defensible framing is platform-specific, with the house-rule hedge:** "as far as is
 known, the first to present a client-redirected mic as a native **macOS Core Audio** input
 device" (via a from-scratch `AudioServerPlugIn`), pairing with camera redirection for a full
 remote webcam **+ mic**. Even that is **unverified** — prior native macOS OSS RDP servers exist
-(x6nux, CGKPK; see §4), though both are display+input only and almost certainly don't do mic —
+(x6nux, CGKPK; see §4) — x6nux's design doc defers mic input to a future phase (checked
+2026-09-30) and CGKPK is display+input only —
 so state the macOS angle only with "as far as is known", and **never** a bare "first OSS RDP
 server to do mic redirection".
 
-Sources: [`pulseaudio-module-xrdp`](https://github.com/neutrinolabs/pulseaudio-module-xrdp),
+Sources: [kmsrdp `pulse_util.rs`](https://github.com/yamamo-to/kmsrdp/blob/main/kmsrdp/src/pulse_util.rs),
+[`grd-rdp-dvc-audio-input.c`](https://gitlab.gnome.org/GNOME/gnome-remote-desktop/-/blob/main/src/grd-rdp-dvc-audio-input.c),
+[`shadow_audin.c`](https://github.com/FreeRDP/FreeRDP/blob/master/server/shadow/shadow_audin.c),
+[`pulseaudio-module-xrdp`](https://github.com/neutrinolabs/pulseaudio-module-xrdp),
 [`xrdp/sesman/chansrv/sound.c`](https://github.com/neutrinolabs/xrdp/blob/devel/sesman/chansrv/sound.c),
 [xrdp audio wiki](https://github.com/neutrinolabs/xrdp/wiki/Audio-Output-Virtual-Channel-support-in-xrdp).
 
