@@ -32,10 +32,12 @@ LaunchAgent and edits the same `config.env` — no re-permissioning.
 | `Info.plist` | Bundle metadata template (`__VERSION__` filled from `Cargo.toml`); `LSUIElement` agent, `NSAppleEventsUsageDescription`. |
 | `config.env.example` | Seed for `~/Library/Application Support/macrdp/config.env`. The signed binary reads this directly via `macrdp --config`. |
 | `launchagent.plist.template` | LaunchAgent template (`__LABEL__`/`__APP_DIR__`/`__HOME__` filled at install). |
-| `make-app.sh` | Build → assemble bundle → co-sign helper + bundle (incl. the embedded smart-card IFD handler) → install. |
+| `make-app.sh` | Build → assemble bundle → co-sign helper + bundle (incl. the embedded smart-card IFD handler and "macrdp Microphone" driver) → install. |
 | `install-launchagent.sh` | Seed config, render plist, bootstrap the agent. |
 | `ifd-Info.plist` | Info.plist template for the embedded `ifd-macrdp.bundle` (smart-card IFD handler); `__VERSION__`/`__BUNDLE_ID__` filled by `make-app.sh`. |
 | `install-ifd-handler.sh` | Privileged install of the IFD handler into `/usr/local/libexec/SmartCardServices/drivers` (one GUI admin prompt). Run interactively it offers the USB-trigger picker below. Also embedded in the app at `Contents/Resources/`. |
+| `make-audio-plugin.sh` | Build the "macrdp Microphone" CoreAudio plug-in (`macrdp-mic.driver`, no Xcode). `make-app.sh` runs it to embed the driver in the app. |
+| `install-audio-plugin.sh` | Privileged install of `macrdp-mic.driver` into `/Library/Audio/Plug-Ins/HAL` + a coreaudiod restart (one GUI admin prompt); `--uninstall` removes it. Embedded in the app next to the driver; the menu-bar controller runs it. |
 | `select-usb-trigger.sh` | List attached USB devices and pick one as the IFD-handler load trigger; prints its `VID PID` (and a ready-to-paste `IFD_VID=.. IFD_PID=..` install line). Invoked by `install-ifd-handler.sh` interactively; runnable standalone. Embedded in the app next to the installer. |
 | `notarize.sh` | Notarize + staple a `.app`/`.dmg`/`.pkg` (used by the build scripts). |
 | `make-dmg.sh` | Wrap signed apps into a signed + notarized distribution DMG (styled icon layout). |
@@ -111,6 +113,33 @@ packaging/install-ifd-handler.sh --uninstall
 Then set `ENABLE_SMARTCARD_REDIRECTION=1` in `config.env` (and have the client
 redirect its reader: mstsc → Local Resources → More → Smart cards). Verify the
 reader registered with `system_profiler SPSmartCardsDataType`.
+
+## Microphone redirection (optional)
+
+Presents the connecting client's microphone to macOS apps as **"macrdp
+Microphone"**. The device is a CoreAudio plug-in that `make-app.sh` builds and
+**embeds in the app** (`Contents/Resources/macrdp-mic.driver`). Like the IFD
+handler, it must be installed once into a root-owned system directory, so it
+needs an admin prompt and isn't done by drag-to-Applications. Installing restarts
+coreaudiod, which briefly interrupts sound.
+
+The easy way: the menu-bar controller → Settings → **Redirection** → Microphone →
+**Install macrdp Microphone…** (it shows **Update…** when the app bundles a newer
+driver than the installed one, and **Remove…** once installed). Or by hand:
+
+```bash
+# From an installed app (e.g. a DMG install):
+/Applications/macrdp.app/Contents/Resources/install-audio-plugin.sh
+# …or from a checkout (after packaging/make-audio-plugin.sh):
+packaging/install-audio-plugin.sh
+# Uninstall:
+packaging/install-audio-plugin.sh --uninstall
+```
+
+Then set `ENABLE_MICROPHONE_REDIRECTION=1` (the controller's toggle) and have the
+client redirect its mic (mstsc → Local Resources → Remote audio → Settings →
+*Record from this computer*; FreeRDP `/microphone`). Other local accounts on the
+Mac can listen to a live stream — see the trust note in `docs/macos-gotchas.md`.
 
 ## Notes & limits
 

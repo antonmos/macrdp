@@ -6,9 +6,10 @@
 # The plug-in is a plain CFPlugIn `.driver` — no entitlement, no provisioning
 # profile — so installing is a file copy into a root-owned system dir plus a
 # coreaudiod restart. A single GUI admin prompt covers the privileged step (no
-# manual sudo). The built bundle is at target/macrdp-mic.driver (see
-# packaging/make-audio-plugin.sh); once camera-style embedding lands it will also
-# be found inside macrdp.app/Contents/Resources.
+# manual sudo). macrdp.app ships the driver and this script side by side in
+# Contents/Resources (packaging/make-app.sh); the menu-bar controller runs the
+# embedded copy. From a checkout, packaging/make-audio-plugin.sh builds it to
+# target/macrdp-mic.driver.
 #
 # Usage:
 #   packaging/install-audio-plugin.sh              # install
@@ -42,10 +43,12 @@ if [ "${1:-}" = "--uninstall" ]; then
     exit 0
 fi
 
-# Locate the built bundle: an embedded copy in an installed/staged macrdp.app
-# first, else the fresh build under target/.
+# Locate the built bundle: next to this script (running from inside
+# macrdp.app/Contents/Resources), then an installed/staged macrdp.app, then the
+# fresh build under target/.
 SRC=""
 for cand in \
+    "$SCRIPT_DIR/macrdp-mic.driver" \
     "$APP_DIR/macrdp.app/Contents/Resources/macrdp-mic.driver" \
     "$REPO_ROOT/target/macrdp.app/Contents/Resources/macrdp-mic.driver" \
     "$REPO_ROOT/target/macrdp-mic.driver"; do

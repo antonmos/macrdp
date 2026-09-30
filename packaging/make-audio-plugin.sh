@@ -60,7 +60,8 @@ sed "s/__BUILD__/$BUILD/" "$PKG_DIR/audio-plugin-Info.plist" > "$DRIVER/Contents
 echo "    CFBundleVersion (build) = $BUILD"
 
 # Sign (hardened runtime; NO entitlements — a HAL plug-in needs none).
-if [ "$IDENTITY" = "-" ]; then TS="--timestamp=none"; else TS="--timestamp"; fi
+# No secure timestamp for ad-hoc or the self-signed dev identity (as make-app.sh).
+if [ "$IDENTITY" = "-" ] || [ "$IDENTITY" = "macrdp-dev" ]; then TS="--timestamp=none"; else TS="--timestamp"; fi
 echo "==> codesign (hardened runtime, no entitlements)"
 codesign --force --options runtime $TS -s "$IDENTITY" "$DRIVER/Contents/MacOS/macrdp-mic"
 codesign --force --options runtime $TS -s "$IDENTITY" "$DRIVER"

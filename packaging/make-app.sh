@@ -135,6 +135,18 @@ else
     echo "==> WARNING: ifd-handler dylib not found; smart-card handler NOT embedded (unset SKIP_BUILD?)" >&2
 fi
 
+# 2c'. Embed the "macrdp Microphone" CoreAudio plug-in (microphone redirection,
+#      --enable-microphone-redirection) with its privileged installer, the way the
+#      IFD handler ships: the menu-bar controller runs the embedded installer,
+#      which copies the driver into /Library/Audio/Plug-Ins/HAL (one admin
+#      prompt) and restarts coreaudiod. The driver is signed with the app's
+#      identity by make-audio-plugin.sh.
+CODESIGN_IDENTITY="$IDENTITY" OUT_DIR="$STAGE/Contents/Resources" \
+    "$PKG_DIR/make-audio-plugin.sh" >/dev/null
+cp "$PKG_DIR/install-audio-plugin.sh" "$STAGE/Contents/Resources/install-audio-plugin.sh"
+chmod +x "$STAGE/Contents/Resources/install-audio-plugin.sh"
+echo "==> embedded macrdp-mic.driver (macrdp Microphone) + installer"
+
 # 2d. Embed the app-switcher HUD helper (--app-switcher-hud). A small Swift
 #     executable built from gui/; macrdp spawns it from Contents/Resources/macrdphud
 #     (see locate_hud_helper in src/main.rs). Signed before the outer bundle is
