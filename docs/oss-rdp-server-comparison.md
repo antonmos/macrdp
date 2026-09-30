@@ -18,8 +18,11 @@ FreeRDP's source. The brief was explicitly to *disprove* the claims, not confirm
 **Re-verified 2026-09-30** by direct source checks: FreeRDP `master` (as of 2026-09-29),
 **upstream IronRDP `master`** — which since July has grown UDP, USB and camera crates of its
 own, so it now gets a dated section, [§7](#7-upstream-ironrdp--a-dated-timeline) —
-lamco-rdp-server, x6nux/macrdp and CGKPK/RDPonMAC. All three firsts still stand. The UDP
-one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §7).
+lamco-rdp-server, x6nux/macrdp and CGKPK/RDPonMAC. The USB and UDP firsts still stand; the UDP
+one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §7). **The camera
+claim did NOT survive**: gnome-remote-desktop shipped end-to-end camera redirection in GNOME 50,
+four months before macrdp (see §3). A later pass the same day also settled smart-card redirection
+(not a first) and surveyed the IronRDP-based servers.
 
 > **House rule: always write "as far as is known" / "first known" — never a bare "first"
 > or "only".** These are negative-existence claims over a field that was not exhaustively
@@ -36,11 +39,12 @@ one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §7)
 |---|---|---|
 | **USB redirection** — present a client's USB device as a real local device (MS-RDPEUSB/URBDRC) | **First known** (2026-07-06) — **no longer the only one**: qemu-display's `qemu-rdp` followed on 2026-08-24, presenting to a QEMU guest (see §1) | High |
 | **UDP multitransport** — actually carry channel data over UDP (MS-RDPEMT/RDPEUDP) | **First known** — upstream IronRDP's equivalent is an **open PR** (#1954), see §7 | High today; **re-check when #1954 merges** |
-| **Camera redirection** — client webcam → **a real OS camera device**, end to end (MS-RDPECAM) | **First known** *(state it precisely — see below)* | High after source read |
+| **Camera redirection** — client webcam → **a real OS camera device**, end to end (MS-RDPECAM) | **❌ REFUTED 2026-09-30 — do not claim** (gnome-remote-desktop 50, 2026-02/03; see §3). Only a hedged *macOS-specific* framing survives | High after source read |
 | "First/only **native macOS** RDP server" | **❌ REFUTED — do not claim** | High |
 | **Microphone redirection** — present a client mic as a real OS *input* device (MS-RDPEAI) | **❌ Not a first — do not claim** (xrdp, gnome-remote-desktop and kmsrdp do it) | High after source read |
 | **H.264/EGFX** server-side encoding | **Not a first** — don't claim | High |
-| Smart-card (MS-RDPESC) server direction; drive-as-a-real-mount | **Unadjudicated** — assert nothing | — |
+| **Smart-card** (MS-RDPESC) server direction | **❌ Not a first — do not claim** (xrdp since 2013; gnome-remote-desktop 51) | High after source read |
+| Drive redirection presented as a real mount | **Unadjudicated** — assert nothing | — |
 
 ---
 
@@ -136,9 +140,26 @@ Sources: [`multitransport.c`](https://github.com/FreeRDP/FreeRDP/blob/master/lib
 [issue #10669](https://github.com/FreeRDP/FreeRDP/issues/10669),
 [hardening-consulting UDP write-up](https://www.hardening-consulting.com/en/posts/20230109-udp-support-2.html).
 
-## 3. Camera redirection — first known, but say it precisely
+## 3. Camera redirection — ❌ NOT a first (refuted 2026-09-30)
 
-**⚠️ The imprecise version of this claim is false.** FreeRDP **does** ship server-direction
+**Do not claim macrdp is the first OSS RDP server to present a client webcam as an OS camera.**
+**gnome-remote-desktop did it first** — its NEWS for **50.beta (tagged 2026-02-04)** reads "Add
+camera redirection support [Pascal; !360]", and it reached stable in **50.0 (2026-03-14)**, four
+months before macrdp's 2026-07-20. (Commit `30ddcb4f` "rdp: Add classes for camera redirection",
+authored 2022-06-15, merged 2026-01-31.) Verified by source read: `src/grd-rdp-camera-stream.c`
+**decodes** the client's H.264 (`grd-decode-session-sw-avc`, plus a hardware path) and publishes a
+**PipeWire node with `media.class = Video/Source`, `media.role = Camera`** — exactly the
+"decode + register a real OS camera" bar this section used to claim. This was missed in July
+because the survey never cleared gnome-remote-desktop (see [Limits](#limits-of-this-survey)).
+
+**What survives, hedged:** "as far as is known, the first to present a client-redirected webcam as
+a native **macOS** camera" — the other native macOS RDP servers (§4) have no camera code
+(re-checked 2026-09-30). Pair it with mstsc: MS-RDPECAM is the path mstsc actually uses for
+webcams. Never a bare "first OSS RDP server" camera claim.
+
+The July analysis below is kept because its FreeRDP finding still stands.
+
+**⚠️ The protocol-level version of the claim was always false.** FreeRDP **does** ship server-direction
 MS-RDPECAM code — `channels/rdpecam/server/` contains `camera_device_main.c` (~29.7 KB)
 and `camera_device_enumerator_main.c` (~16.6 KB). So macrdp is **NOT** "the first OSS RDP
 server to implement MS-RDPECAM server-side," and saying so invites an easy correction from
@@ -158,16 +179,16 @@ application-supplied callback. There is **no video decoding anywhere** (no ffmpe
 openh264) and **no OS device registration** (no V4L2 loopback or equivalent). The caller must
 implement decode, presentation, and device exposure.
 
-**So the defensible claim is the end-to-end path:** first known OSS RDP server to *decode*
-the redirected samples and *register a real camera device with the host OS*, so ordinary
-apps (Photo Booth, Zoom, FaceTime) can select it.
+**So the July claim rested on the end-to-end path** — decode the samples and register a real
+camera device with the host OS. FreeRDP doesn't do that; gnome-remote-desktop (above) does, and
+did first.
 
 **Upstream IronRDP (checked 2026-09-30):** `ironrdp-rdpecam` landed on **2026-09-02**
 ([#1870](https://github.com/Devolutions/IronRDP/pull/1870)) with codecs and a `client.rs`
 only — the client-direction side, not wired into `ironrdp-client` yet, and no server half.
 Not a counterexample.
 
-**Not a counterexample:** Apache Guacamole's RDPECAM work
+**Also not a counterexample:** Apache Guacamole's RDPECAM work
 ([GUACAMOLE-1415](https://issues.apache.org/jira/browse/GUACAMOLE-1415)) is
 client-direction — browser → guacd → Windows host. Despite the name, `guacd` acts
 architecturally as an RDP *client*, so as a gateway it structurally cannot present a
@@ -187,7 +208,7 @@ Both are genuine RDP servers (they terminate the protocol themselves — not VNC
 proxies), and both are **earlier**. macrdp's docs never actually made this claim, so nothing
 required retraction — it's recorded here so it's never made by accident.
 
-**They do not threaten claims 1–3:** neither implements USB, camera, UDP-multitransport,
+**They do not threaten claims 1–2 (or the macOS-specific camera framing in §3):** neither implements USB, camera, UDP-multitransport,
 drive, or smart-card redirection (source trees re-checked 2026-09-30; neither has pushed
 code since). x6nux does have audio and clipboard; RDPonMAC has only stubs for both.
 
@@ -198,7 +219,7 @@ code since). x6nux does have audio and clipboard; RDPonMAC has only stubs for bo
 **Do not claim macrdp is the first OSS RDP server to redirect the client's microphone — xrdp,
 gnome-remote-desktop and kmsrdp already do it, end to end.** Added + verified by direct source read **2026-09-01** (prompted
 by macrdp's own MS-RDPEAI feature landing; the mistake would have been easy to make since USB /
-UDP / camera above *are* firsts).
+UDP above *are* firsts).
 
 **Evidence.** xrdp implements server-direction MS-RDPEAI and presents the client's mic as a
 **real recordable OS input device** — a PulseAudio **source** (which is exactly the meaningful
@@ -278,9 +299,13 @@ Sources: [kmsrdp `pulse_util.rs`](https://github.com/yamamo-to/kmsrdp/blob/main/
 
 - **H.264/EGFX server-side encoding is not a first** — xrdp and gnome-remote-desktop both do
   server-side H.264.
-- **Smart-card (MS-RDPESC) server direction** and **drive redirection presented as a real
-  filesystem mount** were **not adjudicated**. They may well be unusual, but assert nothing
-  either way without a source-tree audit.
+- **Camera redirection is not a first** — gnome-remote-desktop 50 (§3).
+- **Smart-card (MS-RDPESC) server direction is not a first** — xrdp has had it since 2013
+  (`sesman/chansrv/smartcard_pcsc.c`, a 66 KB PC/SC daemon stand-in; checked 2026-09-30), and
+  gnome-remote-desktop added it in **51.beta (2026-08-19)**, "Add support for smartcard
+  redirection [Joan; !406]". macrdp's landed 2026-06-18.
+- **Drive redirection presented as a real filesystem mount** was **not adjudicated**. It may well
+  be unusual, but assert nothing either way without a source-tree audit.
 - [Lamco's comparison page](https://lamco.ai/comparison/) is marketing-quality; the
   verification panel rejected claims resting on it. Don't cite it in either direction.
 
@@ -306,7 +331,8 @@ How to read it:
 - **USB** — upstream's *protocol* processors predate macrdp's first mount by five days, so the
   claim is strictly the **end-to-end presentation**, which upstream deliberately leaves to the
   application. This column is a collaboration, not a race: see §1 for macrdp's part in it.
-- **Camera** — upstream is client-direction only. No change.
+- **Camera** — upstream is client-direction only. No change — but the claim itself fell to
+  gnome-remote-desktop, not to IronRDP (§3).
 - **Who built what (checked 2026-09-30).** USB is the one column macrdp collaborated on (§1).
   **UDP is independent work** by glamberson (Lamco) and AKolenda: macrdp has no comments or
   reviews on that series or on the RDP-UDP tracking issue
@@ -321,13 +347,22 @@ How to read it:
 
 ## Limits of this survey
 
-The honest boundary on claims 1–3: the survey did **not** affirmatively clear **ogon**,
-**gnome-remote-desktop**, the **Weston/wlroots** RDP backends, **NeutrinoRDP**, or the
-IronRDP-downstream servers hypr, cosmic-ext and ARISU for server-direction USB, camera, or
-UDP. The claims rest on FreeRDP + xrdp absence-of-evidence plus the IronRDP timeline in §7 —
-strong for those projects, but not an exhaustive field survey. Hence "as far as is known".
+The honest boundary on the surviving claims (1–2): the survey did **not** affirmatively clear
+**ogon**, the **Weston/wlroots** RDP backends, **NeutrinoRDP**, or cosmic-ext for server-direction
+USB or UDP. The claims rest on FreeRDP + xrdp + gnome-remote-desktop absence-of-evidence plus the
+IronRDP timeline in §7 — strong for those projects, but not an exhaustive field survey. Hence "as
+far as is known". **The July version of this list included gnome-remote-desktop, and that gap is
+exactly what hid the camera refutation (§3)** — an uncleared project is a live risk, not a
+formality.
 
 **Cleared or found since July (2026-09-30):**
+- **gnome-remote-desktop** — **has camera (50, refutes §3), smart card (51) and mic (46)**; no USB
+  and no UDP in its tree or NEWS. Cleared for USB and UDP only.
+- **IronRDP-based servers** (found by GitHub code search for IronRDP server implementations, then a
+  shallow clone + grep of each): hypr-rdp, ARISU, x6nux/macrdp, kmsrdp (own stack), otto, wrdp,
+  mrdpd, mRDP, tddy-coder, MobaRust, crosvm, taomni — **no USB, UDP data path or camera** (their
+  only UDP matches are vendored PDU types or `multitransport_flags: None`). Only qemu-display has
+  USB (below). cosmic-ext did not surface in the search and remains unchecked.
 - **lamco-rdp-server** (IronRDP-based, active) — no UDP, USB or camera in its source; its own
   `Cargo.toml` says server-side drive redirection is "NOT YET AVAILABLE". Cleared.
 - **qemu-display / `qemu-rdp`** — has server-direction USB since 2026-08-24 (§1). Found by
@@ -347,9 +382,9 @@ These are absence claims about actively developed upstreams. To re-check:
    its CMakeLists? Is [#7558](https://github.com/FreeRDP/FreeRDP/issues/7558) still open?
 2. **UDP** — does `libfreerdp/core/multitransport.c` still answer `E_ABORT` via
    `multitransport_no_udp`? Has any RDPEUDP implementation landed in-tree?
-3. **Camera** — does `channels/rdpecam/server/camera_device_main.c` still merely
-   `IFCALLRET(context->SampleResponse, …)` with the raw payload, with no decoder and no OS
-   device registration?
+3. **Camera (now a NON-first)** — gnome-remote-desktop's `src/grd-rdp-camera-stream.c` (a
+   PipeWire `Video/Source`, since 50) is the refutation; it should stay true. For the hedged
+   macOS framing, re-check that x6nux/macrdp and CGKPK/RDPonMAC still have no camera code.
 4. **Upstream IronRDP** — has [#1954](https://github.com/Devolutions/IronRDP/pull/1954)
    (server EGFX over UDP) merged? Does anything in the tree present a USB device to the OS, or
    has `ironrdp-rdpecam` grown a server half? Check who depends on the crates:
@@ -361,7 +396,8 @@ These are absence claims about actively developed upstreams. To re-check:
 6. **Microphone (a NON-first)** — does `neutrinolabs/pulseaudio-module-xrdp` still build
    `module-xrdp-source.so`, and does `xrdp/sesman/chansrv/sound.c` still implement
    `sound_start_source_listener()` + `audin_start()`? (This is the evidence that mic
-   redirection is *not* a macrdp first — it should stay true.)
+   redirection is *not* a macrdp first — it should stay true; gnome-remote-desktop's
+   `grd-rdp-dvc-audio-input.c` and kmsrdp's `pulse_util.rs` are the other two.)
 
 **Part 2 rots faster than Part 1** and on a different trigger: Part 1 tracks *absences* in
 upstreams that change slowly, while Part 2 tracks two actively-developed projects. Re-check
@@ -389,7 +425,7 @@ it isn't true.
 
 **Facts (re-checked 2026-09-30):** created 2026-03-24, GPL-3.0, 52★/17 forks, last *code*
 push still **2026-05-18** — no commits since the July comparison. Ours: created 2026-05-13,
-MIT OR Apache-2.0, 40★/9 forks, pushed 2026-09-29.
+MIT OR Apache-2.0, 41★/9 forks, pushed 2026-09-30.
 
 > **Verified against their SOURCE TREE, not their README (2026-07-20).** This matters: their
 > README advertises 8 features and **omits audio and clipboard entirely**, both of which they
@@ -412,8 +448,9 @@ MIT OR Apache-2.0, 40★/9 forks, pushed 2026-09-29.
 Corrections to an earlier, README-based version of this table, which wrongly claimed these were
 missing on their side:
 
-- **Audio** — both have it (`macrdp-audio`, ~11 KB; ours `audio.rs` 43 KB + `aac.rs` 16 KB). Ours
-  adds opt-in AAC compression and can carry audio on a lossy UDP flow; theirs is PCM-focused.
+- **Audio output** — both have it (`macrdp-audio`, ~11 KB; ours `audio.rs` 41 KB + `aac.rs` 16 KB).
+  Ours adds opt-in AAC compression and can carry audio on a lossy UDP flow; theirs is PCM-focused.
+  (Audio *input* — the client's mic — is ours alone; see below.)
 - **Clipboard** — both have it (theirs ~53 KB incl. `transfer.rs`, `pasteboard.rs`, `file.rs`,
   `html.rs`; ours ~110 KB incl. `clipboard_rich.rs`). Format-by-format: **text**
   (CF_UNICODETEXT) ✅ both; **images** ✅ both — ours PNG↔DIB (and DIBV5 accepted from Windows),
@@ -432,8 +469,10 @@ Each of the following is **absent from their entire source tree** (whole-tree se
 `virtual_display`/`cgvirtual` — the only `usb` hit is a UI status-bar string):
 
 - **Device redirection — the whole category:** **USB** (a redirected drive mounts in Finder;
-  gamepads work), **camera** (client webcam → a real macOS camera), **drive** (client drive as a
-  real read-write NFS volume), **smart card** (client's card usable by macOS PC/SC apps).
+  gamepads work), **camera** (client webcam → a real macOS camera), **microphone** (client mic →
+  a real macOS input device, since v0.9.10 — their design doc defers it: "AUDIN … Deferred to a
+  future phase"), **drive** (client drive as a real read-write NFS volume), **smart card**
+  (client's card usable by macOS PC/SC apps).
 - **Headless operation** — `CGVirtualDisplay` virtual displays plus `--capture-primary` /
   `--detach-primary` / `--shield-primary` blanking, so the Mac serves a desktop with no monitor
   attached (`--shield-primary` keeps it lockable), plus opt-in lock-on-disconnect.
@@ -455,12 +494,14 @@ Each of the following is **absent from their entire source tree** (whole-tree se
   predates or omits that merge, so it is available upstream and simply unadopted.
 - **Licensing** — MIT OR Apache-2.0 vs their GPL-3.0; materially different for embedding or commercial use.
 - **Upstream contribution posture.** Both projects vendor *patched* IronRDP forks — only one feeds
-  fixes back. Measured 2026-09-30 via the GitHub API: **macrdp's author has 22 PRs to
-  Devolutions/IronRDP, all 22 merged (2026-05-15 → 2026-08-17); x6nux has 0.** Merged work
+  fixes back. Measured 2026-09-30 via the GitHub API: **macrdp's author has 23 PRs to
+  Devolutions/IronRDP — 22 merged (merge dates 2026-05-21 → 2026-08-29) and 1 open (#2053,
+  CLIPRDR format-data correlation, opened 2026-09-30); x6nux has 0.** Merged work
   includes the RDPSND audio keep-newest fix (**#1276**), `SuppressOutput`/`RefreshRectangle`
   handling (**#1319**), the NSCodec encoder + selection (**#1332**), EGFX capability-decode
-  tolerance (**#1298**), three CLIPRDR fixes (**#1299/#1300/#1301**), acceptor field surfacing
-  (**#1373/#1397/#1359/#1404/#1453**), the Server Auto-Reconnect Cookie (**#1405**), USB-PDU
+  tolerance (**#1298**), three CLIPRDR fixes (**#1299/#1300/#1301**), QOI bitmap fixes
+  (**#1335/#1341**), RDPSND format negotiation (**#1359**), acceptor field surfacing
+  (**#1373/#1397/#1404/#1453**), the Server Auto-Reconnect Cookie (**#1405**), USB-PDU
   fixes (**#1418/#1420/#1513**), a pre-TLS denial-of-service fix (**#1556**) and a USB-decoder
   fuzz target (**#1690**) —
   several of which let macrdp *delete* vendored forks entirely. This is a real difference in
@@ -472,7 +513,7 @@ Each of the following is **absent from their entire source tree** (whole-tree se
 ### Fair summary
 
 Both are genuine, actively-built macOS RDP servers sharing a lineage, and the honest gap is
-**narrower than a README comparison suggests** — they have audio, clipboard, AVC444, a software
+**narrower than a README comparison suggests** — they have audio output, clipboard, AVC444, a software
 encoder, and a far richer GUI. The real distinction is **device redirection, headless operation,
 UDP transport, and operational hardening**: macrdp is a remote-desktop *platform*, theirs is a
 polished remote *display*. Neither supersedes the other, and for "see and drive my Mac with good
@@ -499,6 +540,6 @@ Apache 2.0, though GitHub detects no license file. Treat the above as a snapshot
 ## Scope of Part 2
 
 Deliberately limited to the two projects that were actually examined. **No feature matrix
-against xrdp / gnome-remote-desktop / ogon appears here on purpose** — Part 1's
-[Limits](#limits-of-this-survey) records that those were never affirmatively cleared, and a
-tidy comparison grid would imply verification that does not exist.
+against xrdp / gnome-remote-desktop / ogon appears here on purpose** — Part 1 checked them only
+channel-by-channel for specific claims (and [Limits](#limits-of-this-survey) records what was
+never cleared), so a tidy comparison grid would imply verification that does not exist.
