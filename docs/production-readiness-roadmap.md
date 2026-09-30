@@ -5,10 +5,9 @@
 > what would *raise* it.
 >
 > **Where it stands:** Tier 1 (security) is **done**, including adversarial hardening
-> (1.5). Tier 2 (reliability) is **done except the soak's 48–72 h target** — two soaks
-> (31 h and 27.4 h) came back clean, but neither ran that long continuously. Tier 3 is
-> partly done (a metrics surface exists; upstreaming is well along); multi-monitor is still
-> blocked.
+> (1.5). Tier 2 (reliability) is **done** — the 48–72 h soak target was met **twice**
+> (48.7 h on v0.9.3, 51.6 h on v0.9.6), with 0 panics across every soak. Tier 3 is partly
+> done (a metrics surface exists; upstreaming is well along); multi-monitor is still blocked.
 
 ## Framing — the ceiling, and the realistic target
 
@@ -97,22 +96,36 @@ are scope limits, not gaps to close.
 
 ## Tier 2 — Reliability / unattended operation
 
-4. **A real multi-day soak.** *(highest confidence per hour.)* The biggest unknown for
+4. **A real multi-day soak — DONE (2026-08-22).** *(highest confidence per hour.)* The biggest unknown for
    "leave it running" is leaks/drift over time. Known suspects: the *audio long-session
    drift* item, and documented SCStream / NFS-mount leaks on hard kill (`SIGKILL` skips
    `Drop`). Run a 48–72 h soak (idle + active, with reconnect cycles) and fix what it
    surfaces.
-   - **Status (2026-09-30) — two clean soaks, 31 h and 27.4 h; the 48–72 h continuous target
-     is still not met.**
-   - **Second soak — 27.4 h on v0.9.5, 2026-08-05 → 08-06** (Mac mini M1, the entitled daily-
+   - **Status — DONE (2026-08-22). The 48–72 h target was met twice**, on the Mac mini (M1,
+     macOS 26.5) under real use. Figures below are re-derived from the sampler's raw log
+     (`~/macrdp-soak-samples.log` on the mini, 60 s samples) on 2026-09-30: **0 panics in all
+     7,988 samples** across the August runs.
+   - **v0.9.6 — 51.6 h continuous (2026-08-20 01:52Z → 08-22 05:28Z), one process.** RSS
+     21–147 MB, idle floor steady ~31–37 MB (the 147 MB peak was a real 3024×1898 session,
+     released within minutes). The daily-driver config, used for real over ZeroTier and LAN
+     (mstsc and the Windows App for macOS) — including a Windows App reconnect that came up
+     blank and **self-healed through blank recovery**. **Two overnight 4 h abuse windows**
+     (all four harnesses) ran on a schedule during it, with memory flat throughout. Lesson from
+     this run: don't run the abuse harnesses while someone is using the machine — the load
+     broke an interactive session's resize, and it's why they moved to an overnight window.
+   - **v0.9.3 — 48.7 h continuous (2026-08-03 02:16Z → 08-05 02:56Z), one process.** RSS
+     20–197 MB (the 197 MB peak was a deliberate second-client takeover storm, released back to
+     ~35 MB); file descriptors 17–42 and identical before and after every session. Plain-TCP
+     config (UDP multitransport off, to isolate the core). Blank recovery was observed working
+     during it. Connection-level abuse passes (~740 hostile connections) ran on top.
+   - **v0.9.5 — 27.4 h, 2026-08-05 → 08-06** (Mac mini M1, the entitled daily-
      driver build: H.264 + AAC + drive redirection + adaptive bitrate). **0 restarts, 0 panics**;
      RSS avg 54 MB (20–116 MB, returning to baseline — **no leak**); up to 2 concurrent real
      clients. It ran alongside the four abuse harnesses (Tier 1.5) and ended only because the
      process was deliberately restarted for the UDP test. Full record:
-     `docs/pin-bump-soak-results.md`. This build **contains** the v0.8.22+ features the first
-     soak lacked (blank recovery, ARC), but the record doesn't show whether blank recovery
-     actually fired during it — treat that path as present, not soak-exercised.
-   - **First soak — 31 h, 2026-07-01 →** The soak run (started 2026-07-01 18:39, **pre-v0.8.22 / pre-ARC** build, 31 h /
+     `docs/pin-bump-soak-results.md`. (The gate for landing the IronRDP pin bump, not a
+     48 h attempt.)
+   - **v0.8.21-era — 31 h, 2026-07-01 (the first soak).** The soak run (started 2026-07-01 18:39, **pre-v0.8.22 / pre-ARC** build, 31 h /
      1861 one-minute samples; data recovered on a clean re-copy after a first transfer came back
      zero-filled) shows the **foundation core is clean over time, not just alive:**
      - **No memory leak** — RSS bounded 18–88 MB, tracking activity (88 active at start, down to
@@ -128,13 +141,10 @@ are scope limits, not gaps to close.
        surfaced the v0.8.21 fix. The **post-fix soak window had ZERO lockouts** and 14 perfectly
        balanced accept/disconnect pairs. (The overnight escalation cluster is the "took a few
        tries while I was out" incident — pre-fix, now fixed.)
-   - **Why still not "DONE":** (a) neither run reached 48–72 h continuously (31 h and 27.4 h);
-     (b) the blank-recovery detector and ARC are in the second soak's build but **not shown to
-     have fired** during it; (c) everything since v0.9.5 is unsoaked — the preemption bounds
-     (#180), lock-on-disconnect / auto-unlock, rich clipboard and the microphone. What *is*
-     established: the foundation core (capture → encode → ship → audio → input) holds with no
-     leak, drift or crash across two independent day-plus runs on builds a month apart. To close
-     it: one continuous 48–72 h run on a current build, biased toward reconnect cycles.
+   - **Scope — what the soaks do NOT cover:** one host, one network, and the configs above; the
+     headless blanking modes weren't soaked; and everything after v0.9.6 is unsoaked —
+     lock-on-disconnect / auto-unlock, rich clipboard, the microphone, and the v0.9.7
+     dependency updates. A re-soak is worth doing before calling those production-grade.
    - **Soak tooling — both earlier notes DONE:** the monitor (`scripts/soak-monitor.sh`) syncs
      to disk after every sample, so an interrupted transfer can't zero-fill the record; and the
      `audio_dvc` "GREEN" status line now logs at DEBUG, not WARN.
@@ -213,13 +223,11 @@ If picking a starting batch, do these three:
 
 1. **Real TLS certs** (Tier 1.1) — **DONE (2026-06-30).**
 2. **Auth rate-limit + lockout + audit log** (Tier 1.2) — **DONE (2026-06-30).**
-3. **A 48–72 h soak to shake out leaks/drift** (Tier 2.4) — **two clean day-plus runs
-   (31 h on 2026-07-01, 27.4 h on v0.9.5 on 2026-08-05), target not yet met.** Both showed no
-   leak, 0 panics and 0 restarts; the first also field-validated the v0.8.21 auth-guard fix,
-   the second ran under the abuse harnesses. Remaining: one continuous 48–72 h run on a current
-   build, biased toward reconnect cycles (ARC + blank recovery).
+3. **A 48–72 h soak to shake out leaks/drift** (Tier 2.4) — **DONE (2026-08-22): met twice**,
+   48.7 h on v0.9.3 and 51.6 h on v0.9.6, each a single process with no leak and 0 panics,
+   under real use plus the abuse harnesses. (Earlier 31 h and 27.4 h runs were clean too.)
 
 That trio takes it from "daily-driver I babysit" to "I can deploy this and walk away on a
-network I control." Items 1 and 2 are done, the foundation core has held up across two soaks
-a month apart, and Tier 1.5's hardening goes past what the trio asked for. A single continuous
-48–72 h soak on a current build is the remaining high-value item; everything else is incremental.
+network I control." **All three are done**, and Tier 1.5's hardening goes past what the trio
+asked for. The remaining work is incremental: re-soak the features added since v0.9.6, and the
+Tier 3 items.
