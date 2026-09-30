@@ -1,8 +1,14 @@
 # Production-readiness roadmap
 
-> Scoped 2026-06-29. **Not started** — a planning doc to come back to. Companion to
-> the "Production readiness" section in `README.md` (which describes the *current*
-> state); this describes what would *raise* it.
+> Scoped 2026-06-29; **status updated 2026-09-30.** Companion to the "Production
+> readiness" section in `README.md` (which describes the *current* state); this describes
+> what would *raise* it.
+>
+> **Where it stands:** Tier 1 (security) is **done**, including adversarial hardening
+> (1.5). Tier 2 (reliability) is **done except the soak's 48–72 h target** — two soaks
+> (31 h and 27.4 h) came back clean, but neither ran that long continuously. Tier 3 is
+> partly done (a metrics surface exists; upstreaming is well along); multi-monitor is still
+> blocked.
 
 ## Framing — the ceiling, and the realistic target
 
@@ -71,6 +77,24 @@ are scope limits, not gaps to close.
    benefit), and required status checks — a PR can still be merged red, which is tolerable
    while the owner is the only merger.
 
+5. **Adversarial hardening — DONE (2026-07-09 → 2026-08-16).** Beyond the auth gate:
+   - **Fuzzing** the network-facing decoders with in-tree `cargo-fuzz` harnesses (2026-07-09):
+     `ironrdp-rdpeudp` came through clean; `ironrdp-rdpeusb` surfaced **3 real panics**, fixed
+     (#147/#149). A URBDRC fuzz target also went upstream (IronRDP #1690).
+   - **Resource bounds:** `--max-client-size` caps the resolution a client can request (#153),
+     and the smart-card bridge's allocation is bounded.
+   - **Four abuse harnesses** (`scripts/soak_abuse{,2,3,4}.sh`, 2026-08-05): pre-TLS floods and
+     malformed payloads, slowloris, malformed framing, and UDP multitransport abuse (including a
+     400-source-port flood). All pass — see `docs/pin-bump-soak-results.md` §2.
+   - **Two unauthenticated remote denial-of-service bugs found and fixed:** a pre-TLS CPU spin
+     on a 2-byte frame (found by `soak_abuse3`; v0.9.4, 2026-08-05) and a silent connection
+     wedging the accept loop (#180, v0.9.6, 2026-08-16). Both were invisible to the health
+     watchdog.
+   - **Dependency scanning:** a daily `cargo-deny` scan (#146, 2026-07-09); advisories it
+     surfaced were patched in v0.9.7.
+   - **SIEM audit stream:** opt-in structured JSON audit events for a log collector
+     (`--audit-file`, v0.8.33, 2026-07-10), independent of `RUST_LOG`.
+
 ## Tier 2 — Reliability / unattended operation
 
 4. **A real multi-day soak.** *(highest confidence per hour.)* The biggest unknown for
@@ -78,8 +102,17 @@ are scope limits, not gaps to close.
    drift* item, and documented SCStream / NFS-mount leaks on hard kill (`SIGKILL` skips
    `Drop`). Run a 48–72 h soak (idle + active, with reconnect cycles) and fix what it
    surfaces.
-   - **Status — foundation core PASSED a 31 h leak/drift soak; full 48–72 h on v0.8.24 still
-     pending.** The soak run (started 2026-07-01 18:39, **pre-v0.8.22 / pre-ARC** build, 31 h /
+   - **Status (2026-09-30) — two clean soaks, 31 h and 27.4 h; the 48–72 h continuous target
+     is still not met.**
+   - **Second soak — 27.4 h on v0.9.5, 2026-08-05 → 08-06** (Mac mini M1, the entitled daily-
+     driver build: H.264 + AAC + drive redirection + adaptive bitrate). **0 restarts, 0 panics**;
+     RSS avg 54 MB (20–116 MB, returning to baseline — **no leak**); up to 2 concurrent real
+     clients. It ran alongside the four abuse harnesses (Tier 1.5) and ended only because the
+     process was deliberately restarted for the UDP test. Full record:
+     `docs/pin-bump-soak-results.md`. This build **contains** the v0.8.22+ features the first
+     soak lacked (blank recovery, ARC), but the record doesn't show whether blank recovery
+     actually fired during it — treat that path as present, not soak-exercised.
+   - **First soak — 31 h, 2026-07-01 →** The soak run (started 2026-07-01 18:39, **pre-v0.8.22 / pre-ARC** build, 31 h /
      1861 one-minute samples; data recovered on a clean re-copy after a first transfer came back
      zero-filled) shows the **foundation core is clean over time, not just alive:**
      - **No memory leak** — RSS bounded 18–88 MB, tracking activity (88 active at start, down to
@@ -95,17 +128,16 @@ are scope limits, not gaps to close.
        surfaced the v0.8.21 fix. The **post-fix soak window had ZERO lockouts** and 14 perfectly
        balanced accept/disconnect pairs. (The overnight escalation cluster is the "took a few
        tries while I was out" incident — pre-fix, now fixed.)
-   - **Why still not "DONE":** (a) 31 h is short of the 48–72 h target; (b) the run predates
-     v0.8.22, so its **new features were NOT exercised** — the blank-recovery detector (runs
-     per-QoE-callback, can drop the connection) and the ARC auto-reconnect cookie. So the
-     *foundation core* (capture → encode → ship → audio → input steady state) is
-     **production-validated for leak/drift + no-crash longevity over 31 h**; a **full 48–72 h
-     re-soak on v0.8.24** (deployed 2026-07-04; also exercises the RTT-aware controller + faster blank recovery in the field), biased toward reconnect cycles, is still needed to (1) extend the
-     duration and (2) validate the v0.8.22 deltas (esp. blank-recovery false-positive resistance
-     over hours). Two logging notes for that run: harden the soak logger to `fsync`/`F_FULLFSYNC`
-     periodically (or tee key events to the crash-durable macOS unified log) so a transfer/
-     interruption can't zero-fill the record; and the `multitransport`/`audio_dvc` "GREEN"
-     status lines log at WARN — demote to INFO/DEBUG to cut soak noise.
+   - **Why still not "DONE":** (a) neither run reached 48–72 h continuously (31 h and 27.4 h);
+     (b) the blank-recovery detector and ARC are in the second soak's build but **not shown to
+     have fired** during it; (c) everything since v0.9.5 is unsoaked — the preemption bounds
+     (#180), lock-on-disconnect / auto-unlock, rich clipboard and the microphone. What *is*
+     established: the foundation core (capture → encode → ship → audio → input) holds with no
+     leak, drift or crash across two independent day-plus runs on builds a month apart. To close
+     it: one continuous 48–72 h run on a current build, biased toward reconnect cycles.
+   - **Soak tooling — both earlier notes DONE:** the monitor (`scripts/soak-monitor.sh`) syncs
+     to disk after every sample, so an interrupted transfer can't zero-fill the record; and the
+     `audio_dvc` "GREEN" status line now logs at DEBUG, not WARN.
 5. **Robust teardown + log rotation.** *(log rotation + startup reaper SHIPPED 2026-06-30; health-check watchdog SHIPPED 2026-07-03 — Tier 2.5 complete.)*
    - **Log rotation — DONE.** `~/Library/Logs/macrdp.log` is now a self-owned, size-bounded
      rotating file (`src/logging.rs`: `macrdp.log` + N logrotate-style archives, default
@@ -130,7 +162,12 @@ are scope limits, not gaps to close.
      (config.env keys `HEALTH_CHECK` / `HEALTHCHECK_*`). Verified: arms headless, no false bounce
      on an idle runtime. **Scope:** targets runtime-level hangs (deadlock / all workers blocked);
      a listener-level heartbeat for "accept loop silently stopped while the runtime is healthy"
-     is a possible follow-up.
+     is a possible follow-up. Two instances of exactly that class have since been bounded
+     directly instead: the preemption probe (#180, v0.9.6) and — pending — `accept_finalize`
+     (#182, held for the next IronRDP pin bump, which carries the upstream bound).
+   - **`--detach-primary` restart stopgap — DONE (2026-07-23, #169).** On macOS 26 the panel
+     can't be re-enabled in-process after a detach; under launchd macrdp now exits so
+     `KeepAlive` restarts it, restoring the panel in ~2–3 s instead of leaving it dark (#168).
 6. **Per-connection worker processes (`--fork-workers`) — REMOVED 2026-07-17,
    superseded.** A `--fork-workers` model (a supervisor that fork+exec'd a fresh worker
    process per connection, xrdp-style) was added as one answer to the mstsc
@@ -149,10 +186,16 @@ are scope limits, not gaps to close.
    on the git-pinned `ironrdp-acceptor`'s single-monitor `MonitorLayoutPdu`; scoped/paused
    (see the multi-virtual-monitor TODO + memory).
 8. **Auto-update** (e.g. Sparkle) so deployed instances stay current.
-9. **A status / metrics surface** (active connections, fps, bitrate, error counts) for
-   monitoring.
-10. **Upstream the vendored IronRDP forks.** Reduces the long-term maintenance / bus-factor
-    risk that "solo v0 on vendored forks" carries. See `project_upstream_ironrdp_open_prs`.
+9. **A status / metrics surface — PARTLY DONE (2026-08-04).** `--stats-endpoint` serves live
+   bitrate, RTT, standing queue, fps, frames sent and session size as JSON on loopback, and the
+   menu-bar controller's Status tab shows it with server CPU/RAM/uptime and the connected client.
+   Security events go to the SIEM audit stream (Tier 1.5). Not done: error counters, history, or
+   a scrape format (e.g. Prometheus) for external monitoring.
+10. **Upstream the vendored IronRDP forks — WELL ALONG.** 22 macrdp PRs merged upstream
+    (2026-05-21 → 08-29; #2053 open). The v0.9.5 pin bump retired two forks outright
+    (`ironrdp-async`, `ironrdp-rdpeusb`); five remain (`ironrdp-acceptor`, `-dvc`, `-rdpdr`,
+    `-rdpeudp`, `-server`), and the next bump can drop more divergences that have since landed
+    upstream (e.g. the `accept_finalize` bound, and the microphone via `ironrdp-rdpeai`).
 
 ## The honest NO-GOs
 
@@ -170,13 +213,13 @@ If picking a starting batch, do these three:
 
 1. **Real TLS certs** (Tier 1.1) — **DONE (2026-06-30).**
 2. **Auth rate-limit + lockout + audit log** (Tier 1.2) — **DONE (2026-06-30).**
-3. **A 48–72 h soak to shake out leaks/drift** (Tier 2.4) — **foundation core PASSED (31 h).**
-   A 31 h run confirmed no memory/fd/thread/stream/mount leak, 0 panics, and **field-validated
-   the v0.8.21 auth-guard fix** (pre-fix lockouts captured; post-fix window clean); see Tier 2.4
-   above. Remaining to fully close it out: a **48–72 h re-soak on v0.8.24** (deployed 2026-07-04; also exercises the RTT-aware controller + faster blank recovery in the field) exercising reconnect
-   cycles (ARC cookie + blank-recovery detector).
+3. **A 48–72 h soak to shake out leaks/drift** (Tier 2.4) — **two clean day-plus runs
+   (31 h on 2026-07-01, 27.4 h on v0.9.5 on 2026-08-05), target not yet met.** Both showed no
+   leak, 0 panics and 0 restarts; the first also field-validated the v0.8.21 auth-guard fix,
+   the second ran under the abuse harnesses. Remaining: one continuous 48–72 h run on a current
+   build, biased toward reconnect cycles (ARC + blank recovery).
 
 That trio takes it from "daily-driver I babysit" to "I can deploy this and walk away on a
-network I control." With 1.1 + 1.2 landed, the foundation core is soak-validated for leak/drift
-+ no-crash longevity (31 h); closing out Tier 2.4 (full 48–72 h on v0.8.24) is the remaining
-high-value item; everything else is incremental.
+network I control." Items 1 and 2 are done, the foundation core has held up across two soaks
+a month apart, and Tier 1.5's hardening goes past what the trio asked for. A single continuous
+48–72 h soak on a current build is the remaining high-value item; everything else is incremental.
