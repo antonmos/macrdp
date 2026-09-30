@@ -67,13 +67,20 @@ URBDRC CVE is phrased strictly client-direction; and xrdp has explicitly **decli
 implement it ([discussion #2673](https://github.com/neutrinolabs/xrdp/discussions/2673):
 "unlikely to be something the project would want to take on the maintenance for").
 
-**Upstream IronRDP now has the server side of the protocol — built by uchouT, in
-coordination with macrdp.** IronRDP merged server-direction MS-RDPEUSB *protocol processors*
+**How macrdp's was built: independently, from real traffic.** macrdp's server-side URBDRC
+(vendored `ironrdp-server` divergence 16) and its macOS presentation were built by
+reverse-engineering packet captures of a real **mstsc ↔ Windows terminal server** session,
+alongside the MS-RDPEUSB spec — not on top of anyone else's server code. The collaboration
+with upstream below came **after**, to keep macrdp's divergence from IronRDP as small as
+possible.
+
+**Upstream IronRDP now has the server side of the protocol — built independently by uchouT;
+macrdp coordinated with him afterwards.** IronRDP merged server-direction MS-RDPEUSB *protocol processors*
 on **2026-07-01** ([#1394](https://github.com/Devolutions/IronRDP/pull/1394)) and wired them
 into `ironrdp-server` on **2026-08-24**
-([#1417](https://github.com/Devolutions/IronRDP/pull/1417)), both by uchouT. macrdp worked
-with him on it rather than in parallel: its live bring-up against real clients produced the
-`ironrdp-rdpeusb` interop fixes that code sits on
+([#1417](https://github.com/Devolutions/IronRDP/pull/1417)), both by uchouT. Once both
+implementations existed, macrdp worked with him to converge on upstream: its live bring-up
+against real clients produced the `ironrdp-rdpeusb` interop fixes that code sits on
 ([#1418](https://github.com/Devolutions/IronRDP/pull/1418) lenient USB-3 capability values,
 [#1420](https://github.com/Devolutions/IronRDP/pull/1420) full configuration descriptor,
 [#1513](https://github.com/Devolutions/IronRDP/pull/1513) `UsbDevice == 0`) plus a decoder fuzz
@@ -120,6 +127,11 @@ implementation. Cite the source tree and build file.
 
 **Claim:** macrdp actually carries channel data (EGFX video; AAC audio on a lossy flow)
 over an MS-RDPEMT tunnel on MS-RDPEUDP — not a TCP-side bootstrap stub.
+
+**How it was built:** independently, by reverse-engineering packet captures of a real
+**mstsc ↔ Windows terminal server** session alongside the MS-RDPEUDP/RDPEMT specs, in
+macrdp's own sans-I/O `vendor/ironrdp-rdpeudp` crate plus the vendored server. No other
+open-source server-side data path existed to build on (see the evidence below).
 
 **Evidence.** FreeRDP's client **hard-rejects** multitransport via a dedicated
 `multitransport_no_udp` stub that unconditionally answers `E_ABORT`; core
@@ -330,10 +342,14 @@ How to read it:
   known", never "only", and name IronRDP.
 - **USB** — upstream's *protocol* processors predate macrdp's first mount by five days, so the
   claim is strictly the **end-to-end presentation**, which upstream deliberately leaves to the
-  application. This column is a collaboration, not a race: see §1 for macrdp's part in it.
+  application. macrdp's own USB was built independently (from mstsc ↔ Windows terminal server
+  captures); the collaboration came afterwards, to minimise divergence — see §1.
 - **Camera** — upstream is client-direction only. No change — but the claim itself fell to
   gnome-remote-desktop, not to IronRDP (§3).
-- **Who built what (checked 2026-09-30).** USB is the one column macrdp collaborated on (§1).
+- **Who built what (checked 2026-09-30).** Both of macrdp's implementations — USB and UDP —
+  were built independently by reverse-engineering real mstsc ↔ Windows terminal server
+  traffic. USB is the one column where macrdp then collaborated with upstream, after the fact,
+  to minimise divergence (§1).
   **UDP is independent work** by glamberson (Lamco) and AKolenda: macrdp has no comments or
   reviews on that series or on the RDP-UDP tracking issue
   [#140](https://github.com/Devolutions/IronRDP/issues/140), and never proposed its own
