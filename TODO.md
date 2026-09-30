@@ -232,7 +232,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   VT decode). **Phase 3 COMPLETE — LIVE-VERIFIED GREEN 2026-07-20**: a client webcam redirected over MS-RDPECAM now
   presents as a **live macOS camera** (Photo Booth, ~30 fps, zero dropped frames) via a hand-assembled
   (no-Xcode) CoreMediaIO Camera system extension — 3a activation + 3b sink feed + 3c 420v format, all green.
-  As far as is known the first OSS RDP *server* to present a client-redirected webcam as a native OS camera.
+  As far as is known the first on macOS to present a client-redirected webcam as a native OS camera (NOT the first
+  OSS RDP server overall — gnome-remote-desktop 50 did it earlier on Linux; corrected 2026-09-30).
   **Four silent CMIO failure modes were found and are documented in `docs/camera-extension-setup.md` — read
   it before touching this**: bundle filename must == bundle id; `signingID` is literally "unknown" (so sink
   producer auth is impossible and a rejecting hook surfaces as a bogus `-4`); `kCMIOStreamPropertyDirection`

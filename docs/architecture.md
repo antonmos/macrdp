@@ -249,8 +249,8 @@ src/usb_redirect/ Generic USB redirection (MS-RDPEUSB / URBDRC), the SERVER /
                   the Mac. See docs/usb-redirection-feasibility.md.
 src/camera/       Camera redirection (MS-RDPECAM) — presents the CLIENT's webcam as a
   mod.rs          REAL macOS camera (--enable-camera-redirection, opt-in, default OFF,
-  decode.rs       macOS-only). SHIPPED v0.9.0; as far as is known the first OSS RDP
-  feed.rs         *server* to do this, and the path that works for mstsc (which routes
+  decode.rs       macOS-only). SHIPPED v0.9.0; as far as is known the first on macOS
+  feed.rs         (gnome-remote-desktop 50 did it on Linux first), and the path that works for mstsc (which routes
                   webcams over MS-RDPECAM and refuses the raw-USB reads the
                   usb_redirect path would need). mod.rs is the cross-platform policy:
                   the MacCamera RdCameraServerFactory + the CameraSink that receives

@@ -29,7 +29,9 @@ Functional v0 — daily-driver usable on a trusted LAN and over the internet
 `--lock-on-disconnect` holds while a reconnect is handshaking).
 **Per-release detail — what shipped, what was verified live, the war stories — lives in
 `docs/release-history.md`; read it before reasoning about when/why something changed.**
-Release cuts update that file, the README status line, and this Status line.
+Release cuts update that file, the README Status (replace the **Latest** line and push the
+previous release down as a one-line bullet in **Recent releases** — keep it a list, never a
+paragraph), and this Status line.
 
 ## Project goal
 
