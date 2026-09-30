@@ -157,12 +157,13 @@ then delete; promote a parked item to *In flight* when work actually starts.
     **P3 — remaining before merge (status 2026-09-16):**
     - [x] CLI help: `--enable-microphone-redirection` no longer claims "Phase 0 protocol gate only" (`ec389e5`).
       The camera flag had the same stale text since v0.9.0, fixed in `0a6f13b`.
-    - [ ] Install-from-app embedding: ship `macrdp-mic.driver` in `macrdp.app/Contents/Resources` like the ifd
-      bundle, activated from the controller. Today it's a hand-installed copy in the system HAL plug-ins dir,
-      loaded by coreaudiod independently of which macrdp build is installed.
+    - [x] Install-from-app embedding (2026-09-30, `94bd1ed`): `make-app.sh` embeds `macrdp-mic.driver` + its
+      installer; the controller's Settings → Redirection → Microphone installs / updates / removes it
+      (status compares build numbers). Verified end to end in the controller.
     - [ ] Disconnect cleanup + silence/mute handling.
-    - [ ] Docs before merge: no mic entry yet in `docs/cli.md`, `docs/features.md`, `docs/architecture.md` or
-      `docs/configuration.md`. (The stale "Phase 0" / "440 Hz test tone" wording was cleaned up 2026-09-30.)
+    - [x] Docs (2026-09-30): mic entries in `docs/features.md`, `docs/cli.md`, `docs/configuration.md`,
+      `docs/architecture.md`, a user guide section in `docs/audio.md` (linked from the README), the
+      `config.env.example` keys, and the `--help` text (now points at the controller install).
     - [x] **2026-09-30 — the code-review findings verified and fixed (Mac side).** Confirmed + fixed: the shm
       ring is now version 2 — created only once the client negotiates the mic (never pre-auth), exclusively,
       **0644**, wiped + unlinked at session end, with a random session id; the plug-in maps it **read-only**

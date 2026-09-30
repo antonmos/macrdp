@@ -629,13 +629,16 @@ struct Args {
     /// at ~100 ms. Live-verified end-to-end on a real Win11 client. The client must
     /// opt in too (mstsc: Remote audio -> Settings -> "Record from this computer";
     /// FreeRDP: /microphone). REQUIRES the "macrdp Microphone" plug-in to be
-    /// installed once (packaging/install-audio-plugin.sh — a file copy into the
-    /// system HAL plug-ins dir + a coreaudiod restart, one admin prompt, no
-    /// entitlement) — without it macrdp still negotiates and receives the audio, it
-    /// just has no device to feed. Debug: MACRDP_MIC_DUMP=1 writes the received PCM
-    /// to a WAV under $TMPDIR INSTEAD of feeding the device. macOS-only (the device
-    /// half; the protocol half is cross-platform). See TODO.md ("Microphone /
-    /// audio-input redirection").
+    /// installed once — the menu-bar controller's Settings -> Redirection ->
+    /// Microphone, or macrdp.app/Contents/Resources/install-audio-plugin.sh (a
+    /// file copy into the system HAL plug-ins dir + a coreaudiod restart, one admin
+    /// prompt, no entitlement); without it macrdp still negotiates and receives the
+    /// audio, it just has no device to feed. 44.1 kHz only for now (a client that
+    /// picks 48 kHz plays at the wrong pitch). Other local accounts can read a live
+    /// stream (docs/macos-gotchas.md). Debug: MACRDP_MIC_DUMP=1 (config MIC_DUMP=1)
+    /// writes the received PCM to a WAV under $TMPDIR INSTEAD of feeding the device.
+    /// macOS-only (the device half; the protocol half is cross-platform). See
+    /// docs/features.md.
     #[arg(long)]
     enable_microphone_redirection: bool,
 
