@@ -50,13 +50,16 @@ mod msg_id {
     pub const FORMAT_CHANGE: u8 = 0x07;
 }
 
-/// The highest MS-RDPEAI protocol version macrdp advertises. v1 is enough for the
-/// PCM path; properties/higher versions add nothing we drive.
+/// The MS-RDPEAI protocol version macrdp speaks. Version 1 is the lowest there is,
+/// so there is nothing to negotiate down to: whatever the client supports, the
+/// session runs at version 1. Later versions add nothing this path uses.
 const OUR_VERSION: u32 = 1;
 
-/// PCM (`WAVE_FORMAT_PCM`); 16-bit samples. macrdp advertises a permissive set of
-/// common mic-capture PCM formats and lets the client reply with what it can do.
+/// The one capture format macrdp accepts: 16-bit PCM at 44.1 kHz, mono or stereo.
+/// It is what the "macrdp Microphone" device runs at, and there is no resampler,
+/// so any other rate would play at the wrong pitch. mstsc offers it.
 const PCM_BITS_PER_SAMPLE: u16 = 16;
+const PCM_SAMPLE_RATE: u32 = 44_100;
 
 // ---------------------------------------------------------------------------
 // Outbound message encoder (server → client)
@@ -120,16 +123,30 @@ fn pcm_format(n_channels: u16, n_samples_per_sec: u32) -> AudioFormat {
     }
 }
 
-/// The PCM formats macrdp is willing to RECEIVE from the client's mic. Permissive
-/// (mono/stereo × 44.1/48 kHz) so a typical mic's capability is in the set; the
-/// client replies with its supported subset and we open the first it offers.
-fn server_input_formats() -> Vec<AudioFormat> {
-    vec![
-        pcm_format(1, 44_100),
-        pcm_format(2, 44_100),
-        pcm_format(1, 48_000),
-        pcm_format(2, 48_000),
-    ]
+/// The PCM formats macrdp is willing to RECEIVE from the client's mic: 44.1 kHz
+/// 16-bit, mono or stereo — see [`PCM_SAMPLE_RATE`].
+pub fn server_input_formats() -> Vec<AudioFormat> {
+    vec![pcm_format(1, PCM_SAMPLE_RATE), pcm_format(2, PCM_SAMPLE_RATE)]
+}
+
+/// Whether macrdp can take audio in this format — the check applied to whatever
+/// the client offers, since a client may list formats the server didn't
+/// advertise.
+pub fn is_acceptable_capture_format(format: &AudioFormat) -> bool {
+    format.format == WaveFormat::PCM
+        && format.bits_per_sample == PCM_BITS_PER_SAMPLE
+        && format.n_samples_per_sec == PCM_SAMPLE_RATE
+        && matches!(format.n_channels, 1 | 2)
+}
+
+/// The first acceptable format in the client's Formats reply, with its index in
+/// that list — the Open PDU's `initialFormat` must be that index, not 0.
+pub fn choose_capture_format(client_formats: &[AudioFormat]) -> Option<(u32, &AudioFormat)> {
+    client_formats
+        .iter()
+        .enumerate()
+        .find(|(_, f)| is_acceptable_capture_format(f))
+        .and_then(|(i, f)| Some((u32::try_from(i).ok()?, f)))
 }
 
 /// Build a `MSG_SNDIN_FORMATS` body: `NumFormats(u32) | cbSizeFormatsPacket(u32) |
@@ -177,8 +194,10 @@ fn parse_client_formats(body: &[u8]) -> Vec<AudioFormat> {
     out
 }
 
-/// The client HRESULT from an `MSG_SNDIN_OPEN_REPLY` (MS-RDPEAI 2.2.2.4).
-fn parse_open_reply(body: &[u8]) -> Option<u32> {
+/// The single little-endian `u32` that makes up the body of the client's Version
+/// (its version), Open Reply (an HRESULT) and Format Change (a format index)
+/// PDUs (MS-RDPEAI 2.2.2.1 / 2.2.2.4 / 2.2.2.7).
+fn read_u32(body: &[u8]) -> Option<u32> {
     (body.len() >= 4).then(|| u32::from_le_bytes([body[0], body[1], body[2], body[3]]))
 }
 
@@ -207,7 +226,12 @@ pub trait AudinSampleSink: Send {
 /// the audio is only logged and dropped).
 pub struct AudinServer {
     sink: Option<Box<dyn AudinSampleSink>>,
-    /// The format chosen in the Open PDU (the first the client offered).
+    /// The client's Formats reply, kept so a Format Change (an index into it) can
+    /// be resolved.
+    client_formats: Vec<AudioFormat>,
+    /// The format the client is sending in, when it is one macrdp accepts. `None`
+    /// before the Open, or after the client switched to one it doesn't: data is
+    /// then dropped rather than fed to the sink as the wrong format.
     negotiated_format: Option<AudioFormat>,
     /// Running total of inbound audio bytes + a periodic-log throttle.
     data_bytes: u64,
@@ -218,6 +242,7 @@ impl AudinServer {
     pub fn new(sink: Option<Box<dyn AudinSampleSink>>) -> Self {
         Self {
             sink,
+            client_formats: Vec::new(),
             negotiated_format: None,
             data_bytes: 0,
             data_packets: 0,
@@ -251,28 +276,35 @@ impl DvcProcessor for AudinServer {
 
         match message_id {
             msg_id::VERSION => {
-                let client_version = parse_open_reply(body); // same 4-byte u32 layout
+                // Version 1 is the minimum, so the session runs at 1 whatever the
+                // client reports; the value is only logged.
+                let client_version = read_u32(body);
                 info!(
                     client_version = client_version.unwrap_or(0),
+                    session_version = OUR_VERSION,
                     "MS-RDPEAI client Version — sending server Sound Formats"
                 );
                 let formats = server_input_formats();
                 Ok(vec![AudinMsg::new(msg_id::FORMATS, formats_body(&formats))])
             }
             msg_id::FORMATS => {
-                let client_formats = parse_client_formats(body);
-                let Some(chosen) = client_formats.into_iter().next() else {
-                    warn!("MS-RDPEAI client Sound Formats empty/garbled — cannot open the mic");
+                self.client_formats = parse_client_formats(body);
+                let Some((index, chosen)) = choose_capture_format(&self.client_formats) else {
+                    warn!(
+                        offered = self.client_formats.len(),
+                        "MS-RDPEAI client offered no 16-bit PCM 44.1 kHz format — not opening the mic"
+                    );
                     return Ok(Vec::new());
                 };
+                let chosen = chosen.clone();
                 info!(
-                    format = %chosen.format,
+                    index,
                     channels = chosen.n_channels,
                     rate = chosen.n_samples_per_sec,
                     bits = chosen.bits_per_sample,
-                    "MS-RDPEAI client Sound Formats — opening the mic at the client's first format"
+                    "MS-RDPEAI client Sound Formats — opening the mic"
                 );
-                let open = open_body(0, &chosen);
+                let open = open_body(index, &chosen);
                 if let Some(sink) = self.sink.as_mut() {
                     sink.on_format(&chosen);
                 }
@@ -280,7 +312,7 @@ impl DvcProcessor for AudinServer {
                 Ok(vec![AudinMsg::new(msg_id::OPEN, open)])
             }
             msg_id::OPEN_REPLY => {
-                let hr = parse_open_reply(body).unwrap_or(0xFFFF_FFFF);
+                let hr = read_u32(body).unwrap_or(0xFFFF_FFFF);
                 if hr == 0 {
                     info!("MS-RDPEAI Open Reply S_OK — client will now stream the mic");
                 } else {
@@ -296,8 +328,10 @@ impl DvcProcessor for AudinServer {
             msg_id::DATA => {
                 self.data_bytes += body.len() as u64;
                 self.data_packets += 1;
-                if let Some(sink) = self.sink.as_mut() {
-                    sink.on_data(body);
+                if self.negotiated_format.is_some() {
+                    if let Some(sink) = self.sink.as_mut() {
+                        sink.on_data(body);
+                    }
                 }
                 // Log the first packet, then throttle to ~every 200 packets (~2 s).
                 if self.data_packets == 1 || self.data_packets % 200 == 0 {
@@ -311,8 +345,28 @@ impl DvcProcessor for AudinServer {
                 Ok(Vec::new())
             }
             msg_id::FORMAT_CHANGE => {
-                let new_format = parse_open_reply(body).unwrap_or(0);
-                info!(new_format, "MS-RDPEAI Format Change");
+                // The client switched to another entry of its Formats reply. Feed
+                // it on only if macrdp can take it; otherwise drop the data from
+                // here on rather than feed it to the sink as the wrong format.
+                let index = read_u32(body);
+                let format = index
+                    .and_then(|i| usize::try_from(i).ok())
+                    .and_then(|i| self.client_formats.get(i))
+                    .filter(|f| is_acceptable_capture_format(f))
+                    .cloned();
+                match format {
+                    Some(format) => {
+                        info!(index, "MS-RDPEAI Format Change — continuing in the new format");
+                        if let Some(sink) = self.sink.as_mut() {
+                            sink.on_format(&format);
+                        }
+                        self.negotiated_format = Some(format);
+                    }
+                    None => {
+                        warn!(index, "MS-RDPEAI Format Change to an unsupported format — dropping the mic audio");
+                        self.negotiated_format = None;
+                    }
+                }
                 Ok(Vec::new())
             }
             other => {

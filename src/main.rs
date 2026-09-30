@@ -633,8 +633,8 @@ struct Args {
     /// Microphone, or macrdp.app/Contents/Resources/install-audio-plugin.sh (a
     /// file copy into the system HAL plug-ins dir + a coreaudiod restart, one admin
     /// prompt, no entitlement); without it macrdp still negotiates and receives the
-    /// audio, it just has no device to feed. 44.1 kHz only for now (a client that
-    /// picks 48 kHz plays at the wrong pitch). Other local accounts can read a live
+    /// audio, it just has no device to feed. Only 16-bit PCM at 44.1 kHz is
+    /// accepted (a client that can't offer it gets no mic). Other local accounts can read a live
     /// stream (docs/macos-gotchas.md). Debug: MACRDP_MIC_DUMP=1 (config MIC_DUMP=1)
     /// writes the received PCM to a WAV under $TMPDIR INSTEAD of feeding the device.
     /// macOS-only (the device half; the protocol half is cross-platform). See

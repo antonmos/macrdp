@@ -39,8 +39,8 @@ cause a brief click.
   streaming. They can't inject audio, and nothing is kept after the session ends.
   On a Mac with other user accounts, treat an active redirected mic as audible to
   them. (Why: `docs/macos-gotchas.md`, item 5.)
-- **44.1 kHz only for now.** mstsc uses it. A client that picks 48 kHz plays at
-  the wrong pitch; macrdp logs a warning when that happens.
+- **44.1 kHz only for now** (16-bit PCM). mstsc offers it. A client that can't
+  gets no mic, and macrdp logs why.
 
 **Debugging:** `MIC_DUMP=1` in `config.env` (env `MACRDP_MIC_DUMP=1`) writes
 the received audio to a WAV file under `$TMPDIR` instead of feeding the device —

@@ -479,7 +479,7 @@ pub struct RdpServer {
     // protocol gate. The `RDCamera_Device_Enumerator` DVC is advertised only when
     // this is `Some`; byte-identical when None.
     camera_factory: Option<Rc<dyn crate::RdCameraServerFactory>>,
-    // (divergence 24) server-direction MS-RDPEAI audio-input (microphone)
+    // (divergence 25) server-direction MS-RDPEAI audio-input (microphone)
     // redirection — Phase-0 protocol gate. The `AUDIO_INPUT` DVC is advertised only
     // when this is `Some`; byte-identical when None.
     audin_factory: Option<Rc<dyn crate::AudinServerFactory>>,
@@ -897,7 +897,7 @@ fn attach_channels_impl(
         dvc
     };
 
-    // (divergence 24) server-direction MS-RDPEAI audio-input (microphone)
+    // (divergence 25) server-direction MS-RDPEAI audio-input (microphone)
     // redirection (Phase-0 gate). Advertised only when a factory is installed;
     // byte-identical when None. Stateless per-connection (like camera, unlike the
     // process-wide multitransport state), so it is safe to advertise for a

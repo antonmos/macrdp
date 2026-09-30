@@ -177,16 +177,19 @@ then delete; promote a parked item to *In flight* when work actually starts.
       the way: `shm_open` applies its mode exactly (no umask) and `fchmod` fails with EINVAL on shm (the old
       `fchmod` was silently failing); `fstat` reports inode 0 for shm objects (hence the session id).
       **Needs a live re-test** (install the plug-in, record the device with a real client's mic).
-      Deferred: the 250 ms latency-skip → a smoothing ramp (tuning, not a bug). Left to the protocol-layer
-      switch: the 48 kHz advertisement / unchecked client format and the version parsing (both in the
-      vendored `audin.rs`, which upstream's crate replaces) — upstream must be told to accept only 44.1 kHz,
-      or a resampler added.
-    - [ ] Renumber vendored divergence (24) → (25) when rebasing onto a `main` that carries PR #183 (which
-      keeps (24)). #182 was held for the pin bump on 2026-09-17 and never lands its divergence, so (25) is
-      free. Marker at the divergence heading.
+      Deferred: the 250 ms latency-skip → a smoothing ramp (tuning, not a bug). The protocol-side findings
+      (48 kHz advertisement, unchecked client format, version parsing) were fixed later the same day — see
+      below.
+    - [x] Renumbered vendored divergence (24) → (25) (2026-09-30); (24) stays reserved for PR #183.
+    - [x] Protocol-side review findings fixed (2026-09-30): only 16-bit PCM 44.1 kHz advertised/accepted, the
+      matching client entry opened by its index (was hard-coded 0), no Open without one, Format Change
+      followed only to an acceptable format; version handling tidied. Tests in `src/audin/mod.rs`.
+    - [ ] **Shipping AHEAD of the pin bump (decided 2026-09-30)** on divergence (25); adopt upstream
+      `ironrdp-rdpeai` at the bump (port the sinks; the Mac side carries over).
     - [ ] **Decided 2026-09-30: adopt upstream's `ironrdp-rdpeai`** (#1645, merged 08-12; server integration
       #1946, merged 09-22 — both after our 08-03 pin) at the next IronRDP version bump, in place of the
-      vendored `AudinServer`. The mic merges with the bump; no new vendored divergence lands on `main`.
+      vendored `AudinServer`. (Superseded in part the same day: the mic ships ahead on divergence (25) —
+      see the item above — and the switch to upstream happens at the bump.)
     - [x] Rebased onto `main` 2026-09-30 (20 commits; backup branch `feat/microphone-redirection-phase0-pre-p3`).
   - **Module placement:** new `src/audio_input/` (`mod.rs` = the `AUDIO_INPUT` DVC backend + factory/policy,
     `feed.rs` = the shared-memory producer into the HAL plug-in), mirroring `src/camera/`. The plug-in bundle:

@@ -20,8 +20,8 @@
 //! `docs/macos-gotchas.md`.
 //!
 //! Converts 16-bit PCM (mono → upmixed stereo, or stereo) at the ring rate
-//! (44.1 kHz). A client streaming another rate plays at the wrong pitch — the
-//! protocol layer must only accept 44.1 kHz until a resampler lands.
+//! (44.1 kHz). There is no resampler, so the protocol layer accepts only that
+//! format; the rate check in `on_format` is a backstop.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
@@ -299,7 +299,7 @@ impl AudinSampleSink for SharedMemSink {
             warn!(
                 src_rate = self.src_rate,
                 ring_rate = RING_RATE,
-                "mic feed: client rate != device rate — the mic will play at the wrong pitch"
+                "mic feed: client rate != device rate (the protocol layer should have refused this format) — the mic will play at the wrong pitch"
             );
         }
         info!(

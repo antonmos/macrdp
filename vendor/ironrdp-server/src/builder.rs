@@ -213,7 +213,7 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// (divergence 24) Install the MS-RDPEAI audio-input (microphone) redirection
+    /// (divergence 25) Install the MS-RDPEAI audio-input (microphone) redirection
     /// Phase-0 gate. When set, the `AUDIO_INPUT` DVC is advertised and the client's
     /// redirected mic is negotiated + logged.
     pub fn with_audin_factory(mut self, audin_factory: Option<Box<dyn AudinServerFactory>>) -> Self {

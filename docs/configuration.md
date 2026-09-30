@@ -207,8 +207,8 @@ packaging side, see [../packaging/README.md](../packaging/README.md).
                           Privacy: other user accounts on this Mac can listen to the
                           mic while a session is streaming (they cannot inject
                           audio, and nothing is kept after the session ends).
-                          44.1 kHz only for now — mstsc uses it; a client that picks
-                          48 kHz plays at the wrong pitch.
+                          44.1 kHz only for now (16-bit PCM) — mstsc offers it; a
+                          client that can't gets no mic (macrdp logs why).
                           For debugging, `MIC_DUMP=1` in config.env (env
                           `MACRDP_MIC_DUMP=1`) writes the received audio to a WAV
                           file under $TMPDIR instead of feeding the device.

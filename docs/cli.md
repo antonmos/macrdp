@@ -294,8 +294,9 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   CoreAudio AudioServerPlugIn inside coreaudiod
                           #   (audioplugin/macrdp_mic.c) that reads it read-only.
                           #   Float32 stereo 44.1 kHz; ~100 ms latency bound; silence
-                          #   when idle. A client choosing 48 kHz plays at the wrong
-                          #   pitch (logged) — mstsc uses 44.1 kHz.
+                          #   when idle. Only 16-bit PCM 44.1 kHz is accepted (no
+                          #   resampler); a client that can't offer it gets no mic
+                          #   (logged) — mstsc offers it.
                           #   REQUIRES the driver installed once in
                           #   /Library/Audio/Plug-Ins/HAL (admin prompt + coreaudiod
                           #   restart): the controller's Settings → Redirection →

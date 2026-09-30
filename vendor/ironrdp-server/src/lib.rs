@@ -27,7 +27,10 @@ mod rdpeusb;
 mod server;
 mod sound;
 
-pub use audin::{AudinSampleSink, AudinServer, AudinServerFactory, AUDIO_INPUT_CHANNEL_NAME};
+pub use audin::{
+    choose_capture_format, is_acceptable_capture_format, server_input_formats, AudinSampleSink, AudinServer,
+    AudinServerFactory, AUDIO_INPUT_CHANNEL_NAME,
+};
 pub use clipboard::CliprdrServerFactory;
 pub use display::{
     BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, Framebuffer, PixelFormat, RGBAPointer, RdpServerDisplay,
