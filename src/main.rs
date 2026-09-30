@@ -626,22 +626,30 @@ struct Args {
     /// EXPERIMENTAL, opt-in (default OFF; requires --enable-udp-multitransport).
     /// Migrate the EGFX (H.264) channel onto the reliable UDP tunnel via MS-RDPEDYC
     /// Soft-Sync (verified rendering on mstsc). Without it, EGFX stays on TCP even
-    /// when multitransport is offered. **Caveat — clean-link feature only:** the
-    /// reliable tunnel is an ordered stream, so under packet loss it head-of-line-
-    /// blocks like TCP and, once the client abandons the tunnel, EGFX freezes with
-    /// no recovery until reconnect (audio survives on TCP). Use only on a low-loss
-    /// link. (Promoted from the MACRDP_UDP_MIGRATE_EGFX env var, which still works
-    /// as a fallback.) macOS-only build; see docs/rdp-udp-multitransport-feasibility.md.
+    /// when multitransport is offered. **Caveat — clean-link feature:** the reliable
+    /// tunnel is an ordered stream, so under packet loss it head-of-line-blocks like
+    /// TCP. A watchdog detects the wedge (~3 s of silent EGFX acks while shipping)
+    /// and moves EGFX back onto TCP for the rest of the session, so video recovers
+    /// instead of freezing until reconnect (audio stays on TCP throughout). Best on
+    /// a low-loss link. (Promoted from the MACRDP_UDP_MIGRATE_EGFX env var, which
+    /// still works as a fallback.) macOS-only build; see
+    /// docs/rdp-udp-multitransport-feasibility.md.
     #[arg(long)]
     udp_migrate_egfx: bool,
 
-    /// EXPERIMENTAL, opt-in (default OFF). Congestion-responsive H.264 bitrate for
-    /// EGFX-over-UDP: when the reliable UDP tunnel shows packet loss (retransmits),
-    /// lower the VideoToolbox bitrate toward a floor (AIMD multiplicative-decrease),
-    /// and climb back toward the --bitrate ceiling when the link clears — so video
-    /// degrades to "choppy but alive" under loss instead of wedging. Only acts while
-    /// EGFX is on a UDP tunnel (no-op on TCP). Tunables: MACRDP_UDP_ADAPTIVE_FLOOR_BPS,
-    /// _INCREASE_BPS, _DECREASE, _INTERVAL_MS. macOS-only build.
+    /// Opt-in (default OFF). Congestion-responsive H.264 bitrate, on BOTH the TCP
+    /// path and the UDP tunnel (only with --enable-h264): an AIMD controller reads
+    /// the standing queue delay (each frame's ship→ack round trip minus the
+    /// windowed-minimum RTT, EWMA-smoothed) plus reliable-tunnel retransmits, and
+    /// moves the VideoToolbox bitrate within [floor, --bitrate] — so --bitrate is a
+    /// ceiling. A long but clean link (VPN/ZeroTier) keeps full quality; a thin one
+    /// degrades gracefully instead of freezing. Under sustained congestion it also
+    /// stretches the periodic keyframe and, once the bitrate is at its floor, caps
+    /// the frame rate (default 10 fps, never zero). A link whose measured RTT at
+    /// connect is >= MACRDP_ADAPTIVE_SEED_RTT_MS (50) starts at ceiling/3. Tunables:
+    /// MACRDP_UDP_ADAPTIVE_{FLOOR_BPS,INCREASE_BPS,DECREASE,INTERVAL_MS,RETX_TOLERANCE},
+    /// MACRDP_ADAPTIVE_{QUEUE_HIGH_MS,EWMA_ALPHA,FLOOR_FPS}. macOS-only build; see
+    /// docs/cli.md.
     #[arg(long)]
     adaptive_bitrate: bool,
 
