@@ -248,7 +248,7 @@ That contrast is the whole reason macrdp's redirection strategy is device-class-
 As far as is known, macrdp is the **first known open-source RDP server that receives a
 client-redirected USB device and presents it as a real local device** (drive first mounted
 2026-07-06; no longer the only one — qemu-display's `qemu-rdp` followed on 2026-08-24,
-presenting to a QEMU guest; see [oss-rdp-server-comparison.md](oss-rdp-server-comparison.md) §1 and §6) —
+presenting to a QEMU guest; see [oss-rdp-server-comparison.md](oss-rdp-server-comparison.md) §1 and §7) —
 i.e. it implements the **server direction** of MS-RDPEUSB (`URBDRC`) plus local device
 synthesis. This mirrors the project's earlier UDP-multitransport finding (first OSS RDP
 server with a working UDP data path).

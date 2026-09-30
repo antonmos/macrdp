@@ -9,6 +9,7 @@
 )]
 
 mod aac;
+mod audin;
 mod audio;
 mod auth;
 mod auth_guard;
@@ -602,16 +603,44 @@ struct Args {
     #[arg(long)]
     enable_usb_redirection: bool,
 
-    /// EXPERIMENTAL, opt-in (default OFF). Camera redirection (MS-RDPECAM) —
-    /// **Phase 0 protocol gate only**. Advertises the `RDCamera_Device_Enumerator`
-    /// DVC and logs the client's camera announcement (`DEVICE_ADDED_NOTIFICATION`)
-    /// so we can confirm a modern mstsc/Win11 will hand macrdp a redirected webcam
-    /// over MS-RDPECAM. It does NOT present a camera yet (no per-device channel, no
-    /// stream, no macOS code). The client must opt in too (mstsc: Local Resources ->
-    /// More -> "Video capture devices"). Cross-platform (pure protocol). See
-    /// docs/rdp-camera-redirection-feasibility.md.
+    /// Opt-in (default OFF). Camera redirection (MS-RDPECAM) — the client redirects
+    /// its WEBCAM and macrdp presents it as a REAL macOS camera: "macrdp Camera"
+    /// becomes selectable in Photo Booth / Zoom / FaceTime / Teams, showing the
+    /// client's live video. H.264 samples over the RDCamera DVC -> VideoToolbox
+    /// decode -> CoreMediaIO sink (zero-copy) -> a CoreMediaIO Camera system
+    /// extension. Live-verified on mstsc at 1080p/~30 fps. The client must opt in
+    /// too (mstsc: Local Resources -> More -> "Video capture devices", enabled
+    /// BEFORE connecting). REQUIRES the camera system extension to be installed +
+    /// activated once (macrdpController.app -> "Enable macrdp Camera...", needs the
+    /// signed + notarized build) — without it macrdp still negotiates and decodes,
+    /// it just has no camera to feed. Debug: MACRDP_CAMERA_DUMP=1 writes the raw
+    /// H.264 + the first decoded frames as PNG to $TMPDIR. macOS-only. See
+    /// docs/camera-extension-setup.md.
     #[arg(long)]
     enable_camera_redirection: bool,
+
+    /// EXPERIMENTAL, opt-in (default OFF). Microphone / audio-input redirection
+    /// (MS-RDPEAI, the `AUDIO_INPUT` DVC) — the client redirects its MICROPHONE (a
+    /// standalone mic, or a webcam's built-in one) and macrdp presents it as a REAL
+    /// macOS input device: "macrdp Microphone" appears in System Settings -> Sound
+    /// -> Input and in QuickTime / Zoom / Teams, carrying the client's live audio.
+    /// Received PCM is fed to a CoreAudio AudioServerPlugIn over a shared-memory
+    /// ring; an idle device reads as digital silence and the feed is latency-bounded
+    /// at ~100 ms. Live-verified end-to-end on a real Win11 client. The client must
+    /// opt in too (mstsc: Remote audio -> Settings -> "Record from this computer";
+    /// FreeRDP: /microphone). REQUIRES the "macrdp Microphone" plug-in to be
+    /// installed once — the menu-bar controller's Settings -> Redirection ->
+    /// Microphone, or macrdp.app/Contents/Resources/install-audio-plugin.sh (a
+    /// file copy into the system HAL plug-ins dir + a coreaudiod restart, one admin
+    /// prompt, no entitlement); without it macrdp still negotiates and receives the
+    /// audio, it just has no device to feed. Only 16-bit PCM at 44.1 kHz is
+    /// accepted (a client that can't offer it gets no mic). Other local accounts can read a live
+    /// stream (docs/macos-gotchas.md). Debug: MACRDP_MIC_DUMP=1 (config MIC_DUMP=1)
+    /// writes the received PCM to a WAV under $TMPDIR INSTEAD of feeding the device.
+    /// macOS-only (the device half; the protocol half is cross-platform). See
+    /// docs/features.md.
+    #[arg(long)]
+    enable_microphone_redirection: bool,
 
     /// EXPERIMENTAL, opt-in (default OFF). Offer RDP UDP multitransport
     /// (MS-RDPEMT over reliable RDPEUDP) to clients that advertise it, and bind a
@@ -2328,6 +2357,9 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("ENABLE_CAMERA_REDIRECTION", false) {
         argv.push("--enable-camera-redirection".into());
     }
+    if on("ENABLE_MICROPHONE_REDIRECTION", false) {
+        argv.push("--enable-microphone-redirection".into());
+    }
     if on("ENABLE_UDP_MULTITRANSPORT", false) {
         argv.push("--enable-udp-multitransport".into());
     }
@@ -2492,6 +2524,7 @@ fn args_from_config(path: &Path) -> Result<Args> {
         // H.264 + PNG frame dumps to $TMPDIR. Env-only like the USB knobs above;
         // bridged so it can be flipped in config.env when debugging the camera.
         ("CAMERA_DUMP", "MACRDP_CAMERA_DUMP"),
+        ("MIC_DUMP", "MACRDP_MIC_DUMP"),
         // #168 stopgap: when --detach-primary can't re-enable the physical panel
         // on disconnect (macOS 26.x won't do it in-process), restart under
         // launchd to restore it. Env-read at the disconnect edge.
@@ -3378,6 +3411,15 @@ async fn async_main() -> Result<()> {
             None
         };
 
+    // MS-RDPEAI microphone / audio-input redirection (Phase-0 gate). The AUDIO_INPUT
+    // DVC is advertised only when the flag is set; inert (byte-identical) when off.
+    let audin_factory: Option<Box<dyn ironrdp_server::AudinServerFactory>> =
+        if args.enable_microphone_redirection {
+            Some(Box::new(audin::MacAudin::new()))
+        } else {
+            None
+        };
+
     // Auth hardening (Tier 1.2): per-IP rate-limit + lockout + audit log via the
     // server's pre-handshake/post-disconnect ConnectionHandler seam. On by default
     // (MACRDP_CONN_GUARD=0 disables).
@@ -3403,6 +3445,7 @@ async fn async_main() -> Result<()> {
         .with_rdpdr_factory(rdpdr_factory)
         .with_usb_factory(usb_factory)
         .with_camera_factory(camera_factory)
+        .with_audin_factory(audin_factory)
         .with_bitmap_codecs(bitmap_codecs())
         .with_gfx_factory(gfx_factory)
         .with_connection_handler(conn_handler)

@@ -476,6 +476,79 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: - macrdp Microphone (Core Audio driver)
+
+    static let micDriverInstalledPath = "/Library/Audio/Plug-Ins/HAL/macrdp-mic.driver"
+
+    enum MicDriverStatus { case notInstalled, installed, updateAvailable }
+
+    /// The build number (CFBundleVersion — epoch seconds, monotonic) of a
+    /// `.driver` bundle, or nil if it isn't there.
+    private func micDriverBuild(at path: String) -> Int? {
+        let plist = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
+        guard let info = NSDictionary(contentsOf: plist),
+              let build = info["CFBundleVersion"] as? String else { return nil }
+        return Int(build)
+    }
+
+    private func bundledMicDriverPath() -> String? {
+        locateServerApp()?.appendingPathComponent("Contents/Resources/macrdp-mic.driver").path
+    }
+
+    /// Whether the driver is installed, and whether macrdp.app bundles a newer one.
+    func micDriverStatus() -> MicDriverStatus {
+        guard let installed = micDriverBuild(at: Self.micDriverInstalledPath) else { return .notInstalled }
+        if let bundled = bundledMicDriverPath().flatMap(micDriverBuild(at:)), bundled > installed {
+            return .updateAvailable
+        }
+        return .installed
+    }
+
+    /// Install (or update) the "macrdp Microphone" driver from the copy macrdp.app
+    /// bundles, via its embedded installer — one admin prompt, then Core Audio
+    /// restarts so the device appears.
+    @objc func installMicDriver() {
+        runMicInstaller(args: [], done: "“macrdp Microphone” is installed",
+                        info: "Turn on Microphone redirection and apply, then have the client redirect "
+                            + "its mic (mstsc: Local Resources → Remote audio → Settings → Record from "
+                            + "this computer; FreeRDP: /microphone).")
+    }
+
+    /// Remove the driver — one admin prompt; Core Audio restarts.
+    @objc func removeMicDriver() {
+        runMicInstaller(args: ["--uninstall"], done: "“macrdp Microphone” is removed",
+                        info: "It no longer appears as an input device.")
+    }
+
+    private func runMicInstaller(args: [String], done: String, info: String) {
+        func say(_ msg: String, _ info: String) {
+            let a = NSAlert()
+            a.messageText = msg
+            a.informativeText = info
+            a.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            _ = a.runModal()
+        }
+        guard let app = locateServerApp() else {
+            say("macrdp.app not found", "Install macrdp.app first, then run this again.")
+            return
+        }
+        let installer = app.appendingPathComponent("Contents/Resources/install-audio-plugin.sh").path
+        guard FileManager.default.fileExists(atPath: installer) else {
+            say("Installer not found",
+                "This macrdp.app build doesn't bundle the macrdp Microphone driver.")
+            return
+        }
+        let out = run("/bin/bash", [installer] + args)
+        if out.code == 0 {
+            say(done, info)
+        } else {
+            say("That didn’t work",
+                out.stdout.isEmpty
+                    ? "The installer exited with code \(out.code)." : String(out.stdout.suffix(800)))
+        }
+    }
+
     // Standard 16:9 virtual-display resolutions, highest 1440p; default 1920×1080.
     static let resolutions: [(Int, Int, String)] = [
         (1280, 720, "1280 × 720"),

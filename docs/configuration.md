@@ -188,6 +188,31 @@ packaging side, see [../packaging/README.md](../packaging/README.md).
                           to $TMPDIR and logs average luma; off by default.
                           macOS-only. See
                           [camera-extension-setup.md](camera-extension-setup.md).
+--enable-microphone-redirection  EXPERIMENTAL. Let the connecting client redirect
+                          its MICROPHONE; macrdp presents it as a real macOS input
+                          device — "macrdp Microphone" appears in System Settings →
+                          Sound → Input and in Zoom / FaceTime / QuickTime / Teams,
+                          carrying the client's live audio. Off by default (and the
+                          default runtime path is byte-identical when off).
+                          The client must opt in too: mstsc = Local Resources →
+                          Remote audio → Settings → "Record from this computer";
+                          FreeRDP = /microphone.
+                          REQUIRES the "macrdp Microphone" driver to be installed
+                          ONCE — macrdp.app bundles it; open the controller →
+                          Settings → Redirection → Microphone → "Install macrdp
+                          Microphone…" (one admin prompt; Core Audio restarts,
+                          briefly interrupting sound). The same place updates or
+                          removes it. Without the driver macrdp still receives the
+                          audio; it just has no device to feed.
+                          Privacy: other user accounts on this Mac can listen to the
+                          mic while a session is streaming (they cannot inject
+                          audio, and nothing is kept after the session ends).
+                          44.1 kHz only for now (16-bit PCM) — mstsc offers it; a
+                          client that can't gets no mic (macrdp logs why).
+                          For debugging, `MIC_DUMP=1` in config.env (env
+                          `MACRDP_MIC_DUMP=1`) writes the received audio to a WAV
+                          file under $TMPDIR instead of feeding the device.
+                          macOS-only.
 --no-mute-on-minimize     Opt out of muting audio while the client window is
                           minimized (default ON). When the client sends the
                           standard `SuppressOutput` PDU on minimize, the server

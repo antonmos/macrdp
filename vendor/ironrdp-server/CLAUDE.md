@@ -3,7 +3,7 @@
 Local fork of ironrdp-server 0.10.0, pulled in via `[patch.crates-io]` in
 `Cargo.toml`. The audio-lag control in the dedicated `dispatch_audio` task
 (carved out of `dispatch_server_events`) is the live divergence. Keep this
-vendor dir until (2)/(3)/(4)/(5)/(6)/(8)/(9)/(10)/(11)/(12)/(13)/(14)/(15)/(16)/(18)/(19)/(20)/(21)/(22)/(23) below are upstreamed
+vendor dir until (2)/(3)/(4)/(5)/(6)/(8)/(9)/(10)/(11)/(12)/(13)/(14)/(15)/(16)/(18)/(19)/(20)/(21)/(22)/(23)/(25) below are upstreamed
 AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1c682 pin bump — see (7).)
 **(23) is now UPSTREAMED — Devolutions/IronRDP#1476 MERGED 2026-09-08 (`5198cde0`) — so it drops at the
 next pin bump; it is still listed above because the code is still IN this fork until that bump. Read (23)'s
@@ -1926,3 +1926,85 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     (live session + a silent candidate + session end → a later client must
     still be served), verified to fail without the fix — it times out with
     "the loop never accepted it" — and pass with it.
+
+(25) Server-direction MS-RDPEAI audio-input (microphone) redirection — the
+    `AUDIO_INPUT` DVC.
+
+    **Numbered (25), not (24):** (24) is reserved for PR #183 (@antonmos, the
+    per-served-connection input-reset handle), still open when this landed; #182's
+    claim was dropped when it was held for the pin bump. Renumbered 2026-09-30 —
+    if #183 is abandoned, leave the gap rather than renumber again.
+
+    NOT upstreamed; added 2026-07-27. Began as the Phase 0 protocol gate; the
+    processor now feeds a real sink — macrdp's P2 shared-memory ring into the
+    "macrdp Microphone" AudioServerPlugIn, live- and ear-verified 2026-09-01.
+    Behind macrdp's `--enable-microphone-redirection` (opt-in, default
+    OFF). The RDP client redirects its microphone (a standalone mic, or a webcam's
+    built-in mic) and macrdp — the server — receives it. New `src/audin.rs` houses
+    `AudinServer` (a `DvcProcessor`+`DvcServerProcessor` on the single `AUDIO_INPUT`
+    DVC). **Unlike MS-RDPECAM/MS-RDPEUSB there is NO enumerator + per-device split**
+    — audio input is one channel, so this collapses to a single processor with no
+    `ServerEventSender` and no `create_channel` path (the server never opens a
+    second channel; everything rides `start()`/`process()` return values, like the
+    camera *per-device* processor).
+    - **Handshake (MS-RDPEAI 1.3.3 / 3.2.5): the SERVER speaks first.** `start()`
+      sends `MSG_SNDIN_VERSION`; `process()` replies `MSG_SNDIN_FORMATS` (a
+      permissive PCM set — mono/stereo × 44.1/48 kHz) to the client's Version, then
+      `MSG_SNDIN_OPEN` (picking the client's first offered format) to the client's
+      Formats, then consumes the inbound `MSG_SNDIN_DATA_INCOMING`/`MSG_SNDIN_DATA`
+      stream. Steady state is **client-push** (inbound Data PDUs), not a
+      request/response pull loop like the camera. Header note: MS-RDPEAI has just a
+      1-byte `MessageId` (NO 2-byte version+id `SHARED_MSG_HEADER`).
+    - **`AUDIO_FORMAT` (WAVEFORMATEX) is reused verbatim** from `ironrdp-rdpsnd`
+      (`AudioFormat`/`WaveFormat`, already a dep for the output audio path), so only
+      the MS-RDPEAI message framing on top is new. Outbound PDUs ride an `AudinMsg`
+      `Encode`+`DvcEncode` newtype (à la `CameraMsg`/`UsbHeaderMsg`).
+    - **Robustness:** `process()` TOLERATES every decode (log + `Ok(Vec::new())`,
+      never propagates) — same lesson as divergences 16/19/the ironrdp-dvc
+      Soft-Sync one.
+    - **The sink seam for Phase 2:** `pub trait AudinSampleSink { fn on_format;
+      fn on_data }` (mirrors `CameraSampleSink`), and `AudinServer::new(Option<Box<
+      dyn AudinSampleSink>>)`. Phase 0 passed `None` (log + drop — the go/no-go gate);
+      since P1/P2 macrdp passes a real sink — a WAV dump under `MACRDP_MIC_DUMP`,
+      otherwise the shared-memory feed into the `AudioServerPlugIn` — built in
+      `src/audin/mod.rs`.
+    - Wiring (post-#174 factory architecture, divergence 23): `audin_factory` field
+      is `Option<Rc<dyn AudinServerFactory>>` on `RdpServer` (Box in the `new` param
+      + builder, wrapped `Rc::from` in `new` like the others), attached via the free
+      `attach_channels_impl` (both the normal path AND `negotiate_candidate`), and
+      carried in `NegotiationContext` (`self.audin_factory.clone()`) so a preemption
+      CANDIDATE advertises it too — SAFE to do (unlike multitransport) because the
+      channel is stateless per-connection, no process-wide shared mutation. No
+      `set_sender` (the factory has no `ServerEventSender`). macrdp's cross-platform
+      `src/audin/mod.rs` (`MacAudin`) is the factory.
+    **UPSTREAM HAS THIS — ADOPT IT AT THE NEXT PIN BUMP (decided 2026-09-30).** The
+    `ironrdp-rdpeai` crate (Devolutions/IronRDP#1645, merged 2026-08-12) provides
+    `RdpeaiServer`, and #1946 (glamberson, merged 2026-09-22) wires it into
+    `ironrdp-server` (`RdpeaiServerFactory` / `with_rdpeai_factory`). Both are after
+    macrdp's 2026-08-03 pin. The mic ships AHEAD of the bump on this divergence
+    (user decision 2026-09-30); at the bump, delete `src/audin.rs` + its wiring and
+    port macrdp's sinks (`src/audin/{shm_sink,wav_dump}.rs`) onto upstream's
+    interface — the Mac side (plug-in, ring, packaging) carries over unchanged.
+    **Carry the format rule across:** upstream must accept only 16-bit PCM at
+    44.1 kHz (the device has no resampler), and open the client's matching entry by
+    its index — see below.
+
+    **Format negotiation fix (2026-09-30, from the 2026-09-12 review).** The original
+    advertised 44.1 AND 48 kHz, opened "the client's first offered format" without
+    checking it, and hard-coded `initialFormat = 0` in the Open PDU — so it worked
+    only because mstsc lists 44.1 kHz first. Now: `server_input_formats()` advertises
+    only 16-bit PCM 44.1 kHz mono/stereo; `choose_capture_format` opens the first
+    acceptable client entry BY ITS INDEX (`is_acceptable_capture_format`: PCM,
+    16-bit, 44.1 kHz, 1–2 ch); no acceptable entry → no Open (the mic stays off);
+    a client Format Change to an unsupported entry stops feeding the sink (data
+    dropped) and a change back resumes it. The client Version is logged, not
+    negotiated — v1 is the minimum, so there is nothing to negotiate down to; the
+    three single-`u32` bodies (Version / Open Reply / Format Change) share
+    `read_u32` (was a misnamed `parse_open_reply`). Covered by macrdp's
+    `src/audin/mod.rs` tests, which drive `AudinServer` with client PDUs (4 of the 5
+    fail on the old code). Reference: FreeRDP `channels/audin/server/`. **Phase 0 LIVE-VERIFIED GREEN
+    2026-09-01** — a real Win11 client (mstsc "Record from this computer" / FreeRDP
+    `/microphone`) opened AUDIO_INPUT, negotiated PCM mono 44.1k/16, and streamed the
+    mic continuously (5000+ packets, ~2.2 MB). Phase 2 — the macOS AudioServerPlugIn
+    virtual mic behind `AudinSampleSink` — is DONE, live- and ear-verified 2026-09-01;
+    P3 (packaging, cleanup, docs) remains.

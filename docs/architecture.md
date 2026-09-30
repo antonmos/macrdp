@@ -271,6 +271,31 @@ src/camera/       Camera redirection (MS-RDPECAM) — presents the CLIENT's webc
                   SampleResponse pull loop) lives in the vendored ironrdp-server
                   (src/rdcamera.rs, divergence 19). The virtual camera itself is a
                   separate process: gui/Sources/macrdpcamera (see the gui note above).
+src/audin/        Microphone redirection (MS-RDPEAI) — presents the CLIENT's mic as a
+  mod.rs          real macOS input device (--enable-microphone-redirection,
+  shm_sink.rs     EXPERIMENTAL, opt-in, default OFF). mod.rs is the MacAudin factory
+  wav_dump.rs     (cross-platform) that picks the sink behind the vendored
+                  AudinSampleSink seam: SharedMemSink on macOS, or WavDumpSink with
+                  MACRDP_MIC_DUMP=1. shm_sink.rs writes the client's PCM (16-bit, mono
+                  upmixed) into a POSIX shared-memory ring — created only once the
+                  mic is negotiated, exclusively, mode 0644, with a random session id,
+                  and wiped + unlinked at session end. Its tests parse the C header
+                  (audioplugin/macrdp_mic_ring.h), so the two layouts can't drift.
+                  The protocol state machine is the vendored ironrdp-server's
+                  src/audin.rs, to be replaced by upstream's ironrdp-rdpeai at the next
+                  IronRDP version bump.
+audioplugin/      "macrdp Microphone" — a CoreAudio AudioServerPlugIn (C, no Xcode,
+  macrdp_mic.c    no entitlement) that coreaudiod loads from /Library/Audio/Plug-Ins/
+  macrdp_mic_ring.h HAL. It opens the ring READ-ONLY (private read position),
+  micfeed_test.c  validates the header and indexes with compile-time sizes, and maps
+                  / follows / releases segments from a 1 s background timer — never
+                  from the real-time IO thread, and never unmapping one an IO cycle
+                  may hold. Float32 stereo 44.1 kHz, ~100 ms latency bound, silence
+                  when idle. Built by packaging/make-audio-plugin.sh, embedded in
+                  macrdp.app by make-app.sh, installed via install-audio-plugin.sh
+                  (the menu-bar controller runs it). micfeed_test.c is a bring-up
+                  feeder speaking the same ring protocol. Trust boundary:
+                  docs/macos-gotchas.md (5).
 build.rs          Bakes Xcode Swift-runtime rpath into the final binary
 
 vendor/ironrdp-server/    Local fork of ironrdp-server 0.10.0, pulled in via

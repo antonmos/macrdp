@@ -448,6 +448,8 @@ private struct ExcludeAppsView: View {
 
 private struct RedirectionTab: View {
     @ObservedObject var model: SettingsModel
+    /// Bumped after an install/remove so the driver status is re-read.
+    @State private var micRefresh = 0
     var body: some View {
         Form {
             Text("The connecting client must also opt in to each redirection.")
@@ -468,6 +470,36 @@ private struct RedirectionTab: View {
                 Button("Enable macrdp Camera…") { model.controller.enableCameraRedirection() }
                 Text("Presents the client's webcam as a “macrdp Camera” in Photo Booth / Zoom / "
                     + "FaceTime. The system extension must be enabled once.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Section("Microphone") {
+                let status: AppController.MicDriverStatus = {
+                    _ = micRefresh
+                    return model.controller.micDriverStatus()
+                }()
+                Toggle("Microphone redirection", isOn: model.boolBinding("ENABLE_MICROPHONE_REDIRECTION"))
+                HStack {
+                    Button(status == .updateAvailable ? "Update macrdp Microphone…"
+                               : "Install macrdp Microphone…") {
+                        model.controller.installMicDriver()
+                        micRefresh += 1
+                    }
+                    .disabled(status == .installed)
+                    if status != .notInstalled {
+                        Button("Remove…") {
+                            model.controller.removeMicDriver()
+                            micRefresh += 1
+                        }
+                    }
+                }
+                Text(status == .notInstalled ? "Driver: not installed"
+                        : status == .updateAvailable ? "Driver: installed — this macrdp bundles a newer one"
+                        : "Driver: installed")
+                    .font(.caption)
+                Text("Presents the client's microphone as “macrdp Microphone” in Zoom / FaceTime / "
+                    + "QuickTime. The driver must be installed once (admin; Core Audio restarts, "
+                    + "briefly interrupting sound). Other accounts on this Mac can listen to a live "
+                    + "stream.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }

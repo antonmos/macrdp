@@ -282,6 +282,31 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   H.264 elementary stream (~10 MiB cap) + the first few
                           #   decoded frames as PNG to $TMPDIR and logs average luma
                           #   (off by default). macOS-only.
+--enable-microphone-redirection # EXPERIMENTAL, opt-in (default OFF). Microphone
+                          #   redirection (MS-RDPEAI, the AUDIO_INPUT DVC): the client
+                          #   redirects its MIC and macrdp presents it as a real macOS
+                          #   input device, "macrdp Microphone". The client opts in too
+                          #   (mstsc: Remote audio → Settings → Record from this
+                          #   computer; FreeRDP: /microphone).
+                          #   Pipeline: PCM over AUDIO_INPUT → a shared-memory ring
+                          #   (src/audin/shm_sink.rs, created only once the mic is
+                          #   negotiated, 0644, wiped + unlinked at session end) → a
+                          #   CoreAudio AudioServerPlugIn inside coreaudiod
+                          #   (audioplugin/macrdp_mic.c) that reads it read-only.
+                          #   Float32 stereo 44.1 kHz; ~100 ms latency bound; silence
+                          #   when idle. Only 16-bit PCM 44.1 kHz is accepted (no
+                          #   resampler); a client that can't offer it gets no mic
+                          #   (logged) — mstsc offers it.
+                          #   REQUIRES the driver installed once in
+                          #   /Library/Audio/Plug-Ins/HAL (admin prompt + coreaudiod
+                          #   restart): the controller's Settings → Redirection →
+                          #   Microphone, or Contents/Resources/install-audio-plugin.sh.
+                          #   Without it macrdp negotiates + receives but has no
+                          #   device to feed. Other local accounts can read a live
+                          #   stream (docs/macos-gotchas.md (5)).
+                          #   Debug: MACRDP_MIC_DUMP=1 (config MIC_DUMP=1) writes the
+                          #   received PCM to a WAV under $TMPDIR INSTEAD of feeding
+                          #   the device. macOS-only (the device half).
 --no-lazy-paste           # Opt out of lazy Windows→Mac file paste (default ON).
                           #   Lazy streams bytes on Cmd-V (NSFilePresenter) with native
                           #   "Preparing to paste" progress and lower chunk parallelism;

@@ -127,12 +127,70 @@ then delete; promote a parked item to *In flight* when work actually starts.
     macrdp feeds received PCM into the plug-in via a **shared-memory ring** (the audio analogue of the CMIO
     sink stream), with **clock/drift handling** — the client mic clock vs the Mac audio clock will drift, so
     resample like `audio.rs` already does 48→44.1 (`rubato`), plus a small jitter buffer (RDPEAI over TCP).
-  - **Phasing (mirror the camera feature):** **P0** — the `AUDIO_INPUT` handshake behind the flag, inert:
-    negotiate + log the client streaming its mic, drop the audio (proves mstsc/FreeRDP will hand macrdp a mic;
-    the camera Phase-0 gate is the template). **P1** — accept the Data PDUs, produce a PCM stream, dump to
-    WAV under `MACRDP_MIC_DUMP=1` (like `MACRDP_CAMERA_DUMP`) to verify content. **P2** — the `AudioServerPlugIn`
-    virtual mic + the shared-memory feed → present "macrdp Microphone". **P3** — format/clock robustness,
-    disconnect cleanup, silence/mute handling.
+  - **Phasing (mirror the camera feature):** **P0 ✅ DONE + LIVE-VERIFIED GREEN** (2026-09-01) — the
+    `AUDIO_INPUT` handshake behind the flag, inert: negotiate + log the client streaming its mic, drop the
+    audio (proved a real Win11 mstsc hands macrdp a continuous PCM mic stream over a server-direction DVC).
+    **P1 ✅ DONE + LIVE-VERIFIED** (2026-09-01) — `MACRDP_MIC_DUMP=1` writes the received PCM to a WAV under
+    `$TMPDIR` (`src/audin/wav_dump.rs`, behind the `AudinSampleSink` seam); verified real 17 s mono 44.1 kHz
+    voice (peak 100 % / RMS 2803 / 72 % active). **P2 — the `AudioServerPlugIn` virtual mic** (route A, C, no
+    entitlement), sub-phased: **P2a ✅ DONE + LIVE-VERIFIED GREEN** (2026-09-01) — the HAL plug-in skeleton presenting "macrdp
+    Microphone" with an internal 440 Hz test tone (`audioplugin/macrdp_mic.c` + `packaging/make-audio-plugin.sh`
+    + `packaging/install-audio-plugin.sh`); universal Developer-ID-signed bundle. **coreaudiod loads it, the
+    device appears as a clean INPUT-only 2ch/44100/Virtual device, and it delivers the exact tone** — captured
+    via ffmpeg/AVFoundation: 440 Hz (zero-crossings), −26.02 dBFS peak (= amplitude 0.05), pure sine (peak−RMS
+    = 3.01 dB). Fixed live: scope-aware `Streams` (was reporting phantom output channels).
+    **P2b — the shared-memory feed.** **P2b-0 ✅ DONE + VERIFIED** (2026-09-01) — proved a HAL plug-in inside
+    coreaudiod's sandbox (user `_coreaudiod`) can read POSIX shm (`/macrdp_mic_ring`, 0666) written by an
+    external different-user process (the one real P2b unknown). The plug-in drains the ring in `DoIOOperation`
+    (overrun→drop to half-ring, underrun→silence), 440 Hz fallback otherwise. Proof via audio: a 220 Hz test
+    writer → recorded 220 Hz @ −20 dB, not the fallback. **P2b-1 ✅ DONE + VERIFIED** (2026-09-01) — the real
+    `SharedMemSink : AudinSampleSink` (`src/audin/shm_sink.rs`, byte-for-byte mirror of
+    `audioplugin/macrdp_mic_ring.h`, PCM16 mono→Float32 stereo, release/acquire ordering; wired in
+    `build_processor`: MIC_DUMP→WAV, else macOS→feed, else None). Verified client-free: a layout test pins the
+    Rust struct to the C offsets, and feeding 330 Hz through the real sink recorded 330 Hz @ −20 dB off macrdp
+    Microphone. **✅ FULL RDP CHAIN LIVE-VERIFIED + EAR-VERIFIED** (2026-09-01) — a real Win11 client's mic
+    plays through macrdp Microphone as natural voice at normal pitch (user-confirmed via QuickTime). Fixed live:
+    the macOS ftruncate-once shm quirk (`3ba1599` — 2nd ftruncate on reuse → EINVAL → silent tone fallback).
+    **P2c ✅ DONE + VERIFIED** (2026-09-01) — plug-in no-feed output → SILENCE (verified idle = digital zeros,
+    tone behind compile-time `MACRDP_MIC_FALLBACK_TONE`), and a latency bound (~0.75 s → ~100 ms, jitter-safe);
+    live-verified no dropouts. Resample / drift deferred (mstsc uses 44100, none observed).
+    **P3 — remaining before merge (status 2026-09-16):**
+    - [x] CLI help: `--enable-microphone-redirection` no longer claims "Phase 0 protocol gate only" (`ec389e5`).
+      The camera flag had the same stale text since v0.9.0, fixed in `0a6f13b`.
+    - [x] Install-from-app embedding (2026-09-30, `94bd1ed`): `make-app.sh` embeds `macrdp-mic.driver` + its
+      installer; the controller's Settings → Redirection → Microphone installs / updates / removes it
+      (status compares build numbers). Verified end to end in the controller.
+    - [ ] Disconnect cleanup + silence/mute handling.
+    - [x] Docs (2026-09-30): mic entries in `docs/features.md`, `docs/cli.md`, `docs/configuration.md`,
+      `docs/architecture.md`, a user guide section in `docs/audio.md` (linked from the README), the
+      `config.env.example` keys, and the `--help` text (now points at the controller install).
+    - [x] **2026-09-30 — the code-review findings verified and fixed (Mac side).** Confirmed + fixed: the shm
+      ring is now version 2 — created only once the client negotiates the mic (never pre-auth), exclusively,
+      **0644**, wiped + unlinked at session end, with a random session id; the plug-in maps it **read-only**
+      (private read position), validates the header and indexes with compile-time sizes (the OOB read), maps
+      and follows segments from a 1 s background timer (the never-retry bug), and never unmaps from `StopIO`
+      (retired mappings are unmapped ≥500 ms later); `MACRDP_MIC_DUMP` uses the camera's `=1`/`true` rule and
+      is bridged from `config.env`; `WavDumpSink` finalizes + resets on renegotiation; the Rust tests parse
+      the C header's `#define`s and the header `_Static_assert`s the offsets; `micfeed_test.c` speaks v2; an
+      `fstat` log read uninitialized memory. Trust boundary documented in `docs/macos-gotchas.md` (5): other
+      local accounts can still READ a live stream — POSIX shm has no finer grant. Two macOS facts found on
+      the way: `shm_open` applies its mode exactly (no umask) and `fchmod` fails with EINVAL on shm (the old
+      `fchmod` was silently failing); `fstat` reports inode 0 for shm objects (hence the session id).
+      **Needs a live re-test** (install the plug-in, record the device with a real client's mic).
+      Deferred: the 250 ms latency-skip → a smoothing ramp (tuning, not a bug). The protocol-side findings
+      (48 kHz advertisement, unchecked client format, version parsing) were fixed later the same day — see
+      below.
+    - [x] Renumbered vendored divergence (24) → (25) (2026-09-30); (24) stays reserved for PR #183.
+    - [x] Protocol-side review findings fixed (2026-09-30): only 16-bit PCM 44.1 kHz advertised/accepted, the
+      matching client entry opened by its index (was hard-coded 0), no Open without one, Format Change
+      followed only to an acceptable format; version handling tidied. Tests in `src/audin/mod.rs`.
+    - [ ] **Shipping AHEAD of the pin bump (decided 2026-09-30)** on divergence (25); adopt upstream
+      `ironrdp-rdpeai` at the bump (port the sinks; the Mac side carries over).
+    - [ ] **Decided 2026-09-30: adopt upstream's `ironrdp-rdpeai`** (#1645, merged 08-12; server integration
+      #1946, merged 09-22 — both after our 08-03 pin) at the next IronRDP version bump, in place of the
+      vendored `AudinServer`. (Superseded in part the same day: the mic ships ahead on divergence (25) —
+      see the item above — and the switch to upstream happens at the bump.)
+    - [x] Rebased onto `main` 2026-09-30 (20 commits; backup branch `feat/microphone-redirection-phase0-pre-p3`).
   - **Module placement:** new `src/audio_input/` (`mod.rs` = the `AUDIO_INPUT` DVC backend + factory/policy,
     `feed.rs` = the shared-memory producer into the HAL plug-in), mirroring `src/camera/`. The plug-in bundle:
     `gui/Sources/macrdpmic` (an `AudioServerPlugIn` `.driver`) + a `packaging/make-audio-plugin.sh` +
