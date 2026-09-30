@@ -201,8 +201,8 @@ are scope limits, not gaps to close.
    menu-bar controller's Status tab shows it with server CPU/RAM/uptime and the connected client.
    Security events go to the SIEM audit stream (Tier 1.5). Not done: error counters, history, or
    a scrape format (e.g. Prometheus) for external monitoring.
-10. **Upstream the vendored IronRDP forks — WELL ALONG.** 23 macrdp PRs merged upstream
-    (2026-05-21 → 09-30; #2056 open). The v0.9.5 pin bump retired two forks outright
+10. **Upstream the vendored IronRDP forks — WELL ALONG.** 24 macrdp PRs merged upstream
+    (2026-05-21 → 09-30). The v0.9.5 pin bump retired two forks outright
     (`ironrdp-async`, `ironrdp-rdpeusb`); five remain (`ironrdp-acceptor`, `-dvc`, `-rdpdr`,
     `-rdpeudp`, `-server`), and the next bump can drop more divergences that have since landed
     upstream (e.g. the `accept_finalize` bound, and the microphone via `ironrdp-rdpeai`).
