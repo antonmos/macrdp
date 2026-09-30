@@ -522,12 +522,12 @@ Each of the following is **absent from their entire source tree** (whole-tree se
 - **Licensing** — MIT OR Apache-2.0 vs their GPL-3.0; materially different for embedding or commercial use.
 - **Upstream contribution posture.** Both projects vendor *patched* IronRDP forks — only one feeds
   fixes back. Measured 2026-09-30 via the GitHub API: **macrdp's author has 23 PRs to
-  Devolutions/IronRDP — 22 merged (merge dates 2026-05-21 → 2026-08-29) and 1 open (#2053,
-  CLIPRDR format-data correlation, opened 2026-09-30); x6nux has 0.** Merged work
+  Devolutions/IronRDP, all 23 merged (merge dates 2026-05-21 → 2026-09-30); x6nux has 0.** Merged work
   includes the RDPSND audio keep-newest fix (**#1276**), `SuppressOutput`/`RefreshRectangle`
   handling (**#1319**), the NSCodec encoder + selection (**#1332**), EGFX capability-decode
   tolerance (**#1298**), three CLIPRDR fixes (**#1299/#1300/#1301**), QOI bitmap fixes
-  (**#1335/#1341**), RDPSND format negotiation (**#1359**), acceptor field surfacing
+  (**#1335/#1341**), RDPSND format negotiation (**#1359**), CLIPRDR request/response
+  correlation (**#2053**, 2026-09-30), acceptor field surfacing
   (**#1373/#1397/#1404/#1453**), the Server Auto-Reconnect Cookie (**#1405**), USB-PDU
   fixes (**#1418/#1420/#1513**), a pre-TLS denial-of-service fix (**#1556**) and a USB-decoder
   fuzz target (**#1690**) —
