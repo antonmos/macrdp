@@ -164,6 +164,11 @@ authored 2022-06-15, merged 2026-01-31.) Verified by source read: `src/grd-rdp-c
 "decode + register a real OS camera" bar this section used to claim. This was missed in July
 because the survey never cleared gnome-remote-desktop (see [Limits](#limits-of-this-survey)).
 
+**How macrdp's was built:** independently, by reverse-engineering packet captures of a real
+**mstsc ↔ Windows terminal server** session alongside the MS-RDPECAM spec (vendored
+`ironrdp-server` divergence 19), not derived from gnome-remote-desktop's or anyone else's code.
+Not being first doesn't change that it's an independent implementation.
+
 **What survives, hedged:** "as far as is known, the first to present a client-redirected webcam as
 a native **macOS** camera" — the other native macOS RDP servers (§4) have no camera code
 (re-checked 2026-09-30). Pair it with mstsc: MS-RDPECAM is the path mstsc actually uses for
@@ -260,6 +265,12 @@ queue that drops frames older than 200 ms.
 hands each sample batch to a platform callback (`AudinServerReceiveSamples`), and none of the
 X11 / Mac / Win shadow subsystems implements it (checked 2026-09-30) — protocol endpoint only.
 
+**How macrdp's was built:** independently, by reverse-engineering packet captures of a real
+**mstsc ↔ Windows terminal server** session alongside the MS-RDPEAI spec (vendored
+`ironrdp-server` divergence 25, first live-verified 2026-09-01) — not derived from xrdp,
+gnome-remote-desktop, kmsrdp or upstream IronRDP. As with USB, adopting upstream's crate at the
+next pin bump is about minimising divergence, not about where the design came from.
+
 **Upstream IronRDP has it too, server side, since September 2026.** The `ironrdp-rdpeai`
 protocol crate landed on 2026-08-12 ([#1645](https://github.com/Devolutions/IronRDP/pull/1645))
 and its `ironrdp-server` integration on 2026-09-22
@@ -346,9 +357,9 @@ How to read it:
   captures); the collaboration came afterwards, to minimise divergence — see §1.
 - **Camera** — upstream is client-direction only. No change — but the claim itself fell to
   gnome-remote-desktop, not to IronRDP (§3).
-- **Who built what (checked 2026-09-30).** Both of macrdp's implementations — USB and UDP —
-  were built independently by reverse-engineering real mstsc ↔ Windows terminal server
-  traffic. USB is the one column where macrdp then collaborated with upstream, after the fact,
+- **Who built what (checked 2026-09-30).** All of macrdp's redirection implementations — USB,
+  UDP, camera and microphone — were built independently by reverse-engineering real mstsc ↔
+  Windows terminal server traffic. USB is the one column where macrdp then collaborated with upstream, after the fact,
   to minimise divergence (§1).
   **UDP is independent work** by glamberson (Lamco) and AKolenda: macrdp has no comments or
   reviews on that series or on the RDP-UDP tracking issue
