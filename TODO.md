@@ -732,9 +732,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
   - **Divergence (18), `on_authenticated`, → #1484.** glamberson green-lit filing the patch 2026-09-05 (a
     peer, not a maintainer). The held patch is 392 commits stale and conflicts, and is **blocked on #1969**.
   - **Overlapping upstream work to evaluate at the next bump:** divergence (12) multitransport ↔
-    glamberson's open stack #1951 → #1953 → #1954 (reliable-UDP EGFX only — no lossy audio, no
-    mid-session de-migration); the mic divergence (24→25) ↔ the `ironrdp-rdpeai` crate already on master
-    (#1645, 2026-08-12) plus #1946's `ironrdp-server` integration (open).
+    glamberson's stack #1951 → #1953 → #1954, **all merged (#1954 on 2026-09-30)** (reliable-UDP EGFX only — no
+    lossy audio, no mid-session de-migration); the mic divergence (25) ↔ the `ironrdp-rdpeai` crate on master
+    (#1645, 2026-08-12) plus #1946's `ironrdp-server` integration (merged 2026-09-22).
   - Merged since the previous update: #1556, #1690, #1417, #1711, #1769, #1691.
 
 - IronRDP forks are effectively permanent (each carries un-upstreamed divergences:

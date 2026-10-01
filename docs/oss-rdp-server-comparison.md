@@ -18,8 +18,9 @@ FreeRDP's source. The brief was explicitly to *disprove* the claims, not confirm
 **Re-verified 2026-09-30** by direct source checks: FreeRDP `master` (as of 2026-09-29),
 **upstream IronRDP `master`** — which since July has grown UDP, USB and camera crates of its
 own, so it now gets a dated section, [§7](#7-upstream-ironrdp--a-dated-timeline) —
-lamco-rdp-server, x6nux/macrdp and CGKPK/RDPonMAC. The USB and UDP firsts still stand; the UDP
-one now has **a live challenger**: an open upstream IronRDP PR (see §2 and §7). **The camera
+lamco-rdp-server, x6nux/macrdp and CGKPK/RDPonMAC. The USB and UDP firsts still stand; for UDP,
+upstream IronRDP's server has since caught up (#1954, merged 2026-09-30 — see §2 and §7), so
+it's "first known", never "only". **The camera
 claim did NOT survive**: gnome-remote-desktop shipped end-to-end camera redirection in GNOME 50,
 four months before macrdp (see §3). A later pass the same day also settled smart-card redirection
 (not a first) and surveyed the IronRDP-based servers.
@@ -38,7 +39,7 @@ four months before macrdp (see §3). A later pass the same day also settled smar
 | Capability (server direction) | Verdict | Confidence |
 |---|---|---|
 | **USB redirection** — present a client's USB device as a real local device (MS-RDPEUSB/URBDRC) | **First known** (2026-07-06) — **no longer the only one**: qemu-display's `qemu-rdp` followed on 2026-08-24, presenting to a QEMU guest (see §1) | High |
-| **UDP multitransport** — actually carry channel data over UDP (MS-RDPEMT/RDPEUDP) | **First known** — upstream IronRDP's equivalent is an **open PR** (#1954), see §7 | High today; **re-check when #1954 merges** |
+| **UDP multitransport** — actually carry channel data over UDP (MS-RDPEMT/RDPEUDP) | **First known — no longer the only one:** upstream IronRDP's server carries EGFX over reliable UDP since #1954 (merged 2026-09-30), three months after macrdp (see §2, §7) | High |
 | **Camera redirection** — client webcam → **a real OS camera device**, end to end (MS-RDPECAM) | **❌ REFUTED 2026-09-30 — do not claim** (gnome-remote-desktop 50, 2026-02/03; see §3). Only a hedged *macOS-specific* framing survives | High after source read |
 | "First/only **native macOS** RDP server" | **❌ REFUTED — do not claim** | High |
 | **Microphone redirection** — present a client mic as a real OS *input* device (MS-RDPEAI) | **❌ Not a first — do not claim** (xrdp, gnome-remote-desktop and kmsrdp do it) | High after source read |
@@ -142,11 +143,16 @@ open-source server-side data path existed to build on (see the evidence below).
 transport for its **client** in August–September 2026 (see §7), and server-side
 *bootstrapping* on **2026-09-28** — but the piece that actually moves channel data (EGFX)
 onto the server's UDP tunnel is
-[**#1954**](https://github.com/Devolutions/IronRDP/pull/1954), opened 2026-09-10 and
-**still open** at this check. macrdp's server carried EGFX over UDP on real mstsc on
-**2026-06-26** and shipped it in v0.8.15 on **2026-06-28**. So "first known" holds, and by a
-dated margin — but once #1954 merges, the claim becomes "first", not "only", and
-IronRDP's server should be named alongside it.
+[**#1954**](https://github.com/Devolutions/IronRDP/pull/1954) (glamberson), opened
+2026-09-10 and **merged 2026-09-30**: an opt-in `RdpServerBuilder::with_udp_transport` that
+Soft-Sync-migrates EGFX onto a **reliable** UDP tunnel, tested against mstsc. macrdp's server
+carried EGFX over UDP on real mstsc on **2026-06-26** and shipped it in v0.8.15 on
+**2026-06-28** — about three months earlier. So the claim is **"first known", never "only"**,
+and IronRDP's server should be named alongside it. Two differences, as of #1954 (don't overstate
+them — upstream may add either): IronRDP's path is reliable-UDP EGFX only, where macrdp also
+carries AAC audio on a **lossy** flow (`--enable-lossy-audio`); and in IronRDP a tunnel that
+closes after EGFX has moved ends the connection, where macrdp's watchdog de-migrates EGFX back
+to TCP.
 
 Sources: [`multitransport.c`](https://github.com/FreeRDP/FreeRDP/blob/master/libfreerdp/core/multitransport.c),
 [issue #10669](https://github.com/FreeRDP/FreeRDP/issues/10669),
@@ -341,16 +347,15 @@ release containing it. Checked 2026-09-30.
 
 | Capability (server direction) | macrdp | Upstream IronRDP | FreeRDP |
 |---|---|---|---|
-| **UDP — channel data over the tunnel** | EGFX over reliable RDPEUDP, **verified on real mstsc 2026-06-26**; shipped v0.8.15 (**2026-06-28**). Lossy-UDP AAC audio soak-verified 2026-06-29. | **Client** transport: `ironrdp-rdpeudp` + `ironrdp-rdpemt` 2026-08-15/16 ([#1627](https://github.com/Devolutions/IronRDP/pull/1627), [#1626](https://github.com/Devolutions/IronRDP/pull/1626)), async driver 2026-08-18 ([#1687](https://github.com/Devolutions/IronRDP/pull/1687)), RDPEUDP v1/v2 data transfer 2026-09-10 ([#1919](https://github.com/Devolutions/IronRDP/pull/1919)). **Server** bootstrapping 2026-09-28 ([#1951](https://github.com/Devolutions/IronRDP/pull/1951), [#1953](https://github.com/Devolutions/IronRDP/pull/1953), [#1964](https://github.com/Devolutions/IronRDP/pull/1964), [#1965](https://github.com/Devolutions/IronRDP/pull/1965)). Server **EGFX migration onto UDP: [#1954](https://github.com/Devolutions/IronRDP/pull/1954), opened 2026-09-10, still open.** | None, either side |
+| **UDP — channel data over the tunnel** | EGFX over reliable RDPEUDP, **verified on real mstsc 2026-06-26**; shipped v0.8.15 (**2026-06-28**). Lossy-UDP AAC audio soak-verified 2026-06-29. | **Client** transport: `ironrdp-rdpeudp` + `ironrdp-rdpemt` 2026-08-15/16 ([#1627](https://github.com/Devolutions/IronRDP/pull/1627), [#1626](https://github.com/Devolutions/IronRDP/pull/1626)), async driver 2026-08-18 ([#1687](https://github.com/Devolutions/IronRDP/pull/1687)), RDPEUDP v1/v2 data transfer 2026-09-10 ([#1919](https://github.com/Devolutions/IronRDP/pull/1919)). **Server** bootstrapping 2026-09-28 ([#1951](https://github.com/Devolutions/IronRDP/pull/1951), [#1953](https://github.com/Devolutions/IronRDP/pull/1953), [#1964](https://github.com/Devolutions/IronRDP/pull/1964), [#1965](https://github.com/Devolutions/IronRDP/pull/1965)). Server **EGFX migration onto UDP: [#1954](https://github.com/Devolutions/IronRDP/pull/1954), merged 2026-09-30** (reliable flow only). | None, either side |
 | **USB — present the client's device** | Redirected flash drive **mounts on the Mac, 2026-07-06** (real Linux FreeRDP client); shipped v0.8.27 (**2026-07-07**). | Server-direction MS-RDPEUSB **protocol processors 2026-07-01** ([#1394](https://github.com/Devolutions/IronRDP/pull/1394)); `ironrdp-server` integration 2026-08-24 ([#1417](https://github.com/Devolutions/IronRDP/pull/1417)). A library seam (`DeviceFactory` / `UsbRedirDevice`) — **no OS device presentation**. First downstream presenter: qemu-display's `qemu-rdp`, 2026-08-24 (to a QEMU guest; see §1). | None (no `channels/urbdrc/server/`, [#7558](https://github.com/FreeRDP/FreeRDP/issues/7558) open) |
 | **Camera — client webcam as a real OS camera** | **Live on real mstsc 2026-07-20** at 1080p/~30 fps; shipped v0.9.0 (**2026-07-20**). | `ironrdp-rdpecam` 2026-09-02 ([#1870](https://github.com/Devolutions/IronRDP/pull/1870)): codecs + **client**-direction state machine only, not yet wired into `ironrdp-client`; no server half. | Server **endpoint** only — hands raw samples to a callback, no decode, no device (§3) |
 
 How to read it:
 
-- **UDP** is the claim with the least margin left. Upstream built its transport client-first and
-  is now wiring the server; when #1954 merges, IronRDP's server will carry EGFX over UDP too.
-  macrdp's lead is dated (~2½ months before #1954 was even opened), but from then on say "first
-  known", never "only", and name IronRDP.
+- **UDP** — upstream built its transport client-first, then wired the server; with #1954 merged
+  (2026-09-30) IronRDP's server carries EGFX over UDP too. macrdp's lead is dated (~3 months),
+  so say "first known", never "only", and name IronRDP.
 - **USB** — upstream's *protocol* processors predate macrdp's first mount by five days, so the
   claim is strictly the **end-to-end presentation**, which upstream deliberately leaves to the
   application. macrdp's own USB was built independently (from mstsc ↔ Windows terminal server
@@ -412,8 +417,9 @@ These are absence claims about actively developed upstreams. To re-check:
 3. **Camera (now a NON-first)** — gnome-remote-desktop's `src/grd-rdp-camera-stream.c` (a
    PipeWire `Video/Source`, since 50) is the refutation; it should stay true. For the hedged
    macOS framing, re-check that x6nux/macrdp and CGKPK/RDPonMAC still have no camera code.
-4. **Upstream IronRDP** — has [#1954](https://github.com/Devolutions/IronRDP/pull/1954)
-   (server EGFX over UDP) merged? Does anything in the tree present a USB device to the OS, or
+4. **Upstream IronRDP** — [#1954](https://github.com/Devolutions/IronRDP/pull/1954) (server EGFX
+   over UDP) merged 2026-09-30; has upstream since added lossy-flow audio or TCP de-migration
+   (the two differences §2 records)? Does anything in the tree present a USB device to the OS, or
    has `ironrdp-rdpecam` grown a server half? Check who depends on the crates:
    `git grep -l 'ironrdp-rdpeudp\|ironrdp-rdpeusb\|ironrdp-rdpecam' -- 'crates/*/Cargo.toml'`.
 5. **Field** — have ogon / gnome-remote-desktop / the IronRDP downstreams grown any
