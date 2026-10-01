@@ -726,11 +726,14 @@ then delete; promote a parked item to *In flight* when work actually starts.
     cookie on eviction, and has the #1969 bug. #1483 CLOSED 2026-09-15 as resolved by #1476 + #1913.
   - **#1969** (filed 2026-09-16, reproduced + confirmed causal): under `ConnectionPolicy::Preempt`,
     `on_connection_info` never reaches the handler, because `run()` takes the handler out for the race.
-    **Blocks de-vendoring (22)/(23)** and upstreaming (18). Ships in `ironrdp-server` 0.14.0 unless fixed
-    (release PR #1880); #1934 proposes making preemption the default. Repro test is committed locally on
+    **FIXED upstream 2026-10-01 by antonmos's #2065** (merged by CBenoit; the handler is now shared via
+    `Rc<RefCell<…>>` instead of taken; your three repro tests ship with it). So (22)/(23) can de-vendor with
+    `.with_connection_policy(ConnectionPolicy::Preempt)`, and (18) is unblocked. #1934 (preemption as the
+    default under Hybrid) is still open — #2065 was its prerequisite. Repro test is committed locally on
     the IronRDP clone branch `repro/preempt-drops-handler-hooks` (not pushed).
   - **Divergence (18), `on_authenticated`, → #1484.** glamberson green-lit filing the patch 2026-09-05 (a
-    peer, not a maintainer). The held patch is 392 commits stale and conflicts, and is **blocked on #1969**.
+    peer, not a maintainer). The held patch is 392 commits stale and conflicts; it was blocked on #1969, which is **now fixed (#2065,
+    2026-10-01)** — so it can be rebased and filed.
   - **Overlapping upstream work to evaluate at the next bump:** divergence (12) multitransport ↔
     glamberson's stack #1951 → #1953 → #1954, **all merged (#1954 on 2026-09-30)** (reliable-UDP EGFX only — no
     lossy audio, no mid-session de-migration); the mic divergence (25) ↔ the `ironrdp-rdpeai` crate on master

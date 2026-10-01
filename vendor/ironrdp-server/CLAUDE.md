@@ -1430,11 +1430,10 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     `feat/connection-handler-on-authenticated` @ `68fc3a7b`) is 392 commits stale
     and conflicts: #1476 moved negotiation into `negotiate_and_authenticate`,
     which takes no `&mut self`, so the hook must fire at its call sites.
-    **BLOCKED on Devolutions/IronRDP#1969:** upstream's `ConnectionPolicy::Preempt`
-    takes the handler out of `self` for the race, so a hook fired through
-    `self.connection_handler` is silently dead under `Preempt` — macrdp's only mode,
-    which would zero the `event="auth"` SIEM stream after a bump. Land the #1969
-    handler-sharing fix first, then this hook.
+    **Was BLOCKED on Devolutions/IronRDP#1969 — FIXED 2026-10-01 by #2065** (antonmos;
+    the handler is now shared via `Rc<RefCell<…>>` instead of taken for the race), so a
+    hook fired through `self.connection_handler` reaches the handler under `Preempt`.
+    This hook can now be rebased and filed upstream.
 
 (19) Server-direction MS-RDPECAM camera redirection — **COMPLETE; shipped in
     macrdp v0.9.0** (NOT upstreamed; added 2026-07-16 as a Phase-0 gate, finished
@@ -1762,7 +1761,7 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     not just correlated: removing the `.take()` makes all three pass. It also
     breaks upstream's own documented contract (`on_connection_info` "is called from
     every code path that completes connection setup"). Filed upstream as
-    **Devolutions/IronRDP#1969** (2026-09-16) — check its status at the bump. Note
+    **Devolutions/IronRDP#1969** (2026-09-16) — **FIXED 2026-10-01 by #2065** (antonmos). Note
     for whoever fixes it upstream: `RdpServer` is ALREADY `!Send` there (non-`Send`
     sound/cliprdr/rdpei factories — verified with a compile-time assert), so this
     fork's `Rc<RefCell<..>>` approach adds no new `Send` constraint.
