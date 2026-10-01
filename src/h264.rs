@@ -172,6 +172,18 @@ struct ConnectionContext {
     surface_id: Option<u16>,
     is_ready: bool,
     epoch: Instant,
+    /// When the EGFX pipeline became ready (`on_ready` with AVC), i.e. the
+    /// first moment the client could possibly present. `epoch` is NOT that:
+    /// this context is built with the connection's channels, BEFORE the
+    /// TLS/CredSSP/licensing handshake, so a slow handshake (~3-5 s observed
+    /// on a lid-closed Mac, 2026-09-30) silently ate the blank detector's
+    /// arm/max-wait grace — it fired a Reactivate ~1.8 s into a perfectly
+    /// healthy session, which (attempts > 0) then withheld the
+    /// `presented_clean` latch and left the session to be force-dropped
+    /// minutes later by the established-tier relapse. The blank detector
+    /// measures its connect-time windows from here instead. `None` until
+    /// ready → the detector doesn't run.
+    ready_at: Option<Instant>,
     /// True once the next shipped frame must be a forced keyframe (IDR):
     /// before the first frame, and after any backpressure-induced skip, so
     /// the client never applies P-frame deltas against frames it never got.
@@ -1769,12 +1781,14 @@ impl Gfx {
                 let now = Instant::now();
                 // `gate == None` (disarmed: link too slow) skips detection but
                 // never the frame path — this whole branch is decision-only.
-                if effective_params.as_ref().is_some_and(|p| {
-                    should_blank_recover(
+                // Connect-time windows run from pipeline readiness, not from
+                // `epoch` (built before the handshake — see `ready_at`).
+                let fire = match (ctx.ready_at, effective_params.as_ref()) {
+                    (Some(ready_at), Some(p)) => should_blank_recover(
                         ctx.qoe,
                         ctx.egfx_acks_seen,
                         ctx.acks_suspended,
-                        now.saturating_duration_since(ctx.epoch),
+                        now.saturating_duration_since(ready_at),
                         now.saturating_duration_since(ctx.last_nonzero_qoe_at),
                         now.saturating_duration_since(ctx.last_blank_recovery_at),
                         ctx.blank_recovery_attempts,
@@ -1783,8 +1797,10 @@ impl Gfx {
                         // (feeds the post-attempt heal-confirmation deadline).
                         ctx.last_ack_advance_at > ctx.last_blank_recovery_at,
                         p,
-                    )
-                }) {
+                    ),
+                    _ => false,
+                };
+                if fire {
                     let attempt_no = ctx.blank_recovery_attempts + 1;
                     let action = if self.blank_params.reactivate {
                         // Experimental: first fire = bare core reactivation;
@@ -2841,6 +2857,7 @@ impl GfxServerFactory for Gfx {
             surface_id: None,
             is_ready: false,
             epoch: Instant::now(),
+            ready_at: None,
             need_keyframe: true,
             client_supports_avc: false,
             egfx_declined: egfx_declined.clone(),
@@ -2965,6 +2982,17 @@ impl GraphicsPipelineHandler for GfxHandler {
             if ctx.client_supports_avc {
                 ctx.is_ready = true;
                 ctx.need_keyframe = true;
+                if ctx.ready_at.is_none() {
+                    // Baseline for the blank detector's connect-time windows
+                    // (see `ready_at`). The retry floor for the first attempt
+                    // is measured from `last_blank_recovery_at`, so rebase it
+                    // too — it was also stamped before the handshake.
+                    let now = Instant::now();
+                    ctx.ready_at = Some(now);
+                    if ctx.blank_recovery_attempts == 0 {
+                        ctx.last_blank_recovery_at = now;
+                    }
+                }
                 info!(?negotiated, "EGFX channel ready (H.264 active)");
             } else {
                 ctx.is_ready = false;
