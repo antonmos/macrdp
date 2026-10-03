@@ -54,6 +54,13 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   suppressed, on top of the built-in terminal list —
                           #   for editors with an embedded terminal that can't be
                           #   auto-detected (e.g. com.microsoft.VSCode). macOS-only.
+MACRDP_MODS_RESYNC_IDLE_MS=10000  # env-only: after this many ms with no input,
+                          #   held modifiers are presumed stale and cleared on the
+                          #   next input event (a key-up lost when the client lost
+                          #   focus would otherwise turn every click into a
+                          #   secondary click). 0 disables the idle trigger; the
+                          #   per-connection reset still applies. Independent of
+                          #   --map-ctrl-to-cmd.
 --no-client-resolution    # Don't adopt the resolution the client requests at
                           #   connect (the auto-adopt default). Auto-adopt
                           #   applies on the mirror-primary path when no

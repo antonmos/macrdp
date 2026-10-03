@@ -4,6 +4,15 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/clintcan/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.11 — input fixes
+
+A bug-fix release for mouse and keyboard input, both contributed by @antonmos. The default runtime path changes only in that clicks, drags and scrolls now carry the modifiers you're holding.
+
+- **Held modifiers reach mouse events (#183).** Clicks, drags and scrolls previously carried no modifiers at all, so a Shift-click selection, a Cmd-click or a Shift-drag didn't work as expected. They now carry the keys actually held, whether or not `--map-ctrl-to-cmd` is on.
+- **Ctrl+click → Cmd+click under `--map-ctrl-to-cmd` (#183).** A Windows-style Ctrl+click on a link opens it in a new tab instead of a secondary click. Left button only; it's decided once at button-down and kept for the drag and release, and right/middle clicks and scrolling keep the real modifiers (so Ctrl+scroll is still macOS zoom).
+- **No stuck buttons or modifiers after a reconnect (#183).** A connection that dropped mid-click left the button held, so every move on the next connection was a phantom drag until the next click. Each newly served connection now releases held buttons and modifiers once — not on a live resize or blank-recovery reactivation (vendored server divergence 24). Held modifiers are also cleared after 10 s with no input (`MACRDP_MODS_RESYNC_IDLE_MS`, 0 disables), so a key-up lost when the client lost focus can't turn every click into a secondary click. Caveat: a drag interrupted by a disconnect completes as a drop at the last cursor position — see `docs/known-quirks.md`.
+- **Ctrl+, → Cmd+, under `--map-ctrl-to-cmd` (#184)**, so Ctrl+, opens an app's Preferences.
+
 ## v0.9.10 — microphone redirection
 
 A feature release: **the client's microphone presents as a real macOS input device.** Opt-in and EXPERIMENTAL; the default runtime path is unchanged.

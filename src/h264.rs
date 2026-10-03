@@ -172,18 +172,6 @@ struct ConnectionContext {
     surface_id: Option<u16>,
     is_ready: bool,
     epoch: Instant,
-    /// When the EGFX pipeline became ready (`on_ready` with AVC), i.e. the
-    /// first moment the client could possibly present. `epoch` is NOT that:
-    /// this context is built with the connection's channels, BEFORE the
-    /// TLS/CredSSP/licensing handshake, so a slow handshake (~3-5 s observed
-    /// on a lid-closed Mac, 2026-09-30) silently ate the blank detector's
-    /// arm/max-wait grace — it fired a Reactivate ~1.8 s into a perfectly
-    /// healthy session, which (attempts > 0) then withheld the
-    /// `presented_clean` latch and left the session to be force-dropped
-    /// minutes later by the established-tier relapse. The blank detector
-    /// measures its connect-time windows from here instead. `None` until
-    /// ready → the detector doesn't run.
-    ready_at: Option<Instant>,
     /// True once the next shipped frame must be a forced keyframe (IDR):
     /// before the first frame, and after any backpressure-induced skip, so
     /// the client never applies P-frame deltas against frames it never got.
@@ -357,6 +345,33 @@ struct ConnectionContext {
     /// `on_qoe_metrics` (which only sees the context, not the owning `Gfx`) can
     /// set the [`QoeEvidence::presented_clean`] latch. Not RTT-scaled.
     min_render_reports: u64,
+}
+
+impl ConnectionContext {
+    /// Starts the connection's clocks at `now`, the moment the EGFX channel goes
+    /// ready. The context is built when the server attaches channels, which is
+    /// at TCP accept, before TLS and authentication. A slow login (a
+    /// certificate prompt, a typed password, NLA over a distant link) used to
+    /// count as connected time: by the first frame the blank detector's 3 s arm
+    /// delay and the adaptive controller's 3 s no-ack grace had already run out,
+    /// so a session that had not yet had a chance to present was "recovered"
+    /// within a fraction of a second. Nothing ships or is acknowledged before
+    /// ready, so restarting every connection-start baseline here is exactly
+    /// "the connection starts now". A new connection-start clock belongs here
+    /// too.
+    fn start_clocks(&mut self, now: Instant) {
+        self.epoch = now;
+        self.last_ack_at = now;
+        self.last_ack_advance_at = now;
+        self.last_ship_at = now;
+        self.last_recovery_at = now;
+        self.rtt_bucket_started = now;
+        self.last_throttle_ship = now;
+        self.adaptive_last_control = now;
+        self.last_floor_fps_pass = now;
+        self.last_nonzero_qoe_at = now;
+        self.last_blank_recovery_at = now;
+    }
 }
 
 /// Tunables for ack-driven IDR recovery (EGFX-on-lossy). See
@@ -1781,14 +1796,12 @@ impl Gfx {
                 let now = Instant::now();
                 // `gate == None` (disarmed: link too slow) skips detection but
                 // never the frame path — this whole branch is decision-only.
-                // Connect-time windows run from pipeline readiness, not from
-                // `epoch` (built before the handshake — see `ready_at`).
-                let fire = match (ctx.ready_at, effective_params.as_ref()) {
-                    (Some(ready_at), Some(p)) => should_blank_recover(
+                if effective_params.as_ref().is_some_and(|p| {
+                    should_blank_recover(
                         ctx.qoe,
                         ctx.egfx_acks_seen,
                         ctx.acks_suspended,
-                        now.saturating_duration_since(ready_at),
+                        now.saturating_duration_since(ctx.epoch),
                         now.saturating_duration_since(ctx.last_nonzero_qoe_at),
                         now.saturating_duration_since(ctx.last_blank_recovery_at),
                         ctx.blank_recovery_attempts,
@@ -1797,10 +1810,8 @@ impl Gfx {
                         // (feeds the post-attempt heal-confirmation deadline).
                         ctx.last_ack_advance_at > ctx.last_blank_recovery_at,
                         p,
-                    ),
-                    _ => false,
-                };
-                if fire {
+                    )
+                }) {
                     let attempt_no = ctx.blank_recovery_attempts + 1;
                     let action = if self.blank_params.reactivate {
                         // Experimental: first fire = bare core reactivation;
@@ -2857,7 +2868,6 @@ impl GfxServerFactory for Gfx {
             surface_id: None,
             is_ready: false,
             epoch: Instant::now(),
-            ready_at: None,
             need_keyframe: true,
             client_supports_avc: false,
             egfx_declined: egfx_declined.clone(),
@@ -2980,19 +2990,13 @@ impl GraphicsPipelineHandler for GfxHandler {
             // to a non-AVC client gets it rejected (ERROR_NOT_SUPPORTED) and
             // kills the graphics channel.
             if ctx.client_supports_avc {
+                // Only on the first ready: a mid-session capabilities
+                // re-advertise must not push detection back by an arm delay.
+                if !ctx.is_ready {
+                    ctx.start_clocks(Instant::now());
+                }
                 ctx.is_ready = true;
                 ctx.need_keyframe = true;
-                if ctx.ready_at.is_none() {
-                    // Baseline for the blank detector's connect-time windows
-                    // (see `ready_at`). The retry floor for the first attempt
-                    // is measured from `last_blank_recovery_at`, so rebase it
-                    // too — it was also stamped before the handshake.
-                    let now = Instant::now();
-                    ctx.ready_at = Some(now);
-                    if ctx.blank_recovery_attempts == 0 {
-                        ctx.last_blank_recovery_at = now;
-                    }
-                }
                 info!(?negotiated, "EGFX channel ready (H.264 active)");
             } else {
                 ctx.is_ready = false;
@@ -4761,5 +4765,122 @@ mod tests {
         assert_eq!(&out[11..14], pps.as_slice());
         assert_eq!(&out[14..18], &[0, 0, 0, 1]);
         assert_eq!(&out[18..20], &[0x65, 0x88]);
+    }
+
+    /// A real per-connection context, built the way the server builds one: at
+    /// TCP accept, through `build_server_with_handle`.
+    fn gfx_with_context() -> Gfx {
+        let gfx = Gfx::new(
+            crate::capture::SharedDesktopSize::new(1920, 1080),
+            30,
+            5_000_000,
+            2.0,
+            2,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            true,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU32::new(0)),
+        );
+        assert!(gfx.build_server_with_handle().is_some());
+        gfx
+    }
+
+    /// Every connection-start clock, so a test can't pass by checking only the
+    /// one it happened to remember.
+    fn clocks(ctx: &ConnectionContext) -> [Instant; 11] {
+        [
+            ctx.epoch,
+            ctx.last_ack_at,
+            ctx.last_ack_advance_at,
+            ctx.last_ship_at,
+            ctx.last_recovery_at,
+            ctx.rtt_bucket_started,
+            ctx.last_throttle_ship,
+            ctx.adaptive_last_control,
+            ctx.last_floor_fps_pass,
+            ctx.last_nonzero_qoe_at,
+            ctx.last_blank_recovery_at,
+        ]
+    }
+
+    fn avc_ready() -> CapabilitySet {
+        CapabilitySet::V8_1 {
+            flags: CapabilitiesV81Flags::AVC420_ENABLED,
+        }
+    }
+
+    /// The bug (live, 2026-10-01): a Windows App login took 7-11 s between
+    /// accept and authentication, all counted as connected time, so blank
+    /// recovery ran a reactivation ~0.3 s after the first frame. A slow login
+    /// must not use up the detector's arm delay.
+    #[test]
+    fn a_slow_login_does_not_count_toward_the_connection_clocks() {
+        let gfx = gfx_with_context();
+        let login = Duration::from_secs(8);
+        {
+            let mut guard = gfx.ctx.lock().unwrap();
+            let ctx = guard.as_mut().unwrap();
+            ctx.start_clocks(Instant::now() - login); // built 8 s before ready
+            ctx.client_supports_avc = true;
+        }
+        let ready_at = Instant::now();
+        GfxHandler {
+            ctx: gfx.ctx.clone(),
+        }
+        .on_ready(&avc_ready());
+
+        let guard = gfx.ctx.lock().unwrap();
+        let ctx = guard.as_ref().unwrap();
+        assert!(ctx.is_ready);
+        for (i, clock) in clocks(ctx).iter().enumerate() {
+            assert!(*clock >= ready_at, "clock {i} still counts the login");
+        }
+        assert!(ctx.epoch.elapsed() < gfx.blank_params.arm_delay);
+    }
+
+    /// A capabilities re-advertise on a live connection is not a new start:
+    /// restarting the clocks then would push detection back by an arm delay.
+    #[test]
+    fn a_mid_session_ready_keeps_the_connection_clocks() {
+        let gfx = gfx_with_context();
+        let started = Instant::now() - Duration::from_secs(10);
+        {
+            let mut guard = gfx.ctx.lock().unwrap();
+            let ctx = guard.as_mut().unwrap();
+            ctx.start_clocks(started);
+            ctx.client_supports_avc = true;
+            ctx.is_ready = true;
+        }
+        GfxHandler {
+            ctx: gfx.ctx.clone(),
+        }
+        .on_ready(&avc_ready());
+
+        let guard = gfx.ctx.lock().unwrap();
+        assert_eq!(clocks(guard.as_ref().unwrap()), [started; 11]);
+    }
+
+    /// A declined (no-AVC) client never goes ready, so its clocks are left alone.
+    #[test]
+    fn a_declined_client_does_not_start_the_clocks() {
+        let gfx = gfx_with_context();
+        let built = Instant::now() - Duration::from_secs(8);
+        gfx.ctx
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .start_clocks(built);
+        GfxHandler {
+            ctx: gfx.ctx.clone(),
+        }
+        .on_ready(&avc_ready()); // client_supports_avc is false: declined
+
+        let guard = gfx.ctx.lock().unwrap();
+        let ctx = guard.as_ref().unwrap();
+        assert!(!ctx.is_ready);
+        assert_eq!(clocks(ctx), [built; 11]);
     }
 }
