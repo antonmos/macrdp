@@ -28,7 +28,7 @@ use ironrdp_cliprdr::pdu::{
 };
 use ironrdp_server::{CliprdrServerFactory, ServerEvent, ServerEventSender};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Hard ceiling on the number of bytes we'll return for a single RANGE
 /// request. mstsc and Microsoft Remote Desktop both chunk at <= 1 MiB in
@@ -819,6 +819,15 @@ impl MacCliprdrBackend {
 /// FileContentsRequests instead of short-circuiting them with
 /// CB_RESPONSE_FAIL.
 fn advertise_pasteboard(sender: &Sender, paths: &Paths, rich: bool) -> bool {
+    if pb::is_remote_clipboard() {
+        // A Universal Clipboard promise from another Apple device (the
+        // client Mac itself, when its copy comes back that way, or an
+        // iPhone). Don't advertise it: the client's eventual data request
+        // would force a Bluetooth/AWDL transfer on the server side. The
+        // sender is still alive, so report success. See the quirk note.
+        debug!("not advertising pasteboard: Universal Clipboard promise from another device");
+        return true;
+    }
     if pb::has_files() {
         let entries = pb::read_files();
         if !entries.is_empty() {
@@ -1123,6 +1132,21 @@ impl CliprdrBackend for MacCliprdrBackend {
         // ServerEvent::ClipboardFileCopy path) — it answers the FormatData
         // request from its stored `local_file_list` without ever reaching
         // us. So we only deal with CF_UNICODETEXT and CF_DIB here.
+        if pb::is_remote_clipboard() {
+            // Reading the data would make macOS fetch it from the other
+            // Apple device over Bluetooth/AWDL (with the "Pasting from …"
+            // progress dialog on the Mac's screen) just to relay it to the
+            // RDP client. See the Universal Clipboard quirk note.
+            info!(
+                format = ?request.format,
+                "refusing format data request: the Mac pasteboard holds a Universal \
+                 Clipboard promise from another Apple device, not local data"
+            );
+            self.push(ClipboardMessage::SendFormatData(
+                OwnedFormatDataResponse::new_error(),
+            ));
+            return;
+        }
         let response = match request.format {
             ClipboardFormatId::CF_UNICODETEXT => match pb::read_string() {
                 Some(s) => {
@@ -1362,6 +1386,20 @@ mod pb {
 
     pub fn has_files() -> bool {
         unsafe { has_type(NSPasteboardTypeFileURL) }
+    }
+
+    /// True when the current pasteboard item came from ANOTHER Apple device
+    /// via Universal Clipboard (Handoff) and its data has not been fetched
+    /// yet. macOS tags such items with the undocumented type
+    /// `com.apple.is-remote-clipboard`; the marker is visible in `types()`
+    /// without triggering the transfer (reading the DATA is what starts the
+    /// Bluetooth/AWDL fetch and the "Pasting from …" progress dialog). Same
+    /// check clipboard managers use to avoid pulling every iPhone copy.
+    /// Undocumented, so if Apple ever drops the marker this simply returns
+    /// false and behaviour reverts to advertising/reading as before.
+    pub fn is_remote_clipboard() -> bool {
+        let t = NSString::from_str("com.apple.is-remote-clipboard");
+        has_type(&t)
     }
 
     pub fn has_html() -> bool {
@@ -1683,6 +1721,9 @@ mod pb {
         false
     }
     pub fn has_files() -> bool {
+        false
+    }
+    pub fn is_remote_clipboard() -> bool {
         false
     }
     pub fn read_string() -> Option<String> {
