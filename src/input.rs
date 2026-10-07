@@ -2830,17 +2830,11 @@ mod macos {
                 *LAST_AX_ACTIVATED_PID
                     .lock()
                     .expect("last AX activated pid mutex poisoned") = Some(target_pid);
-                // Promote on every successful activation, not just on
-                // Cmd-release commit. Our cycle has no switcher UI, so
-                // each Tab press visibly switches apps and the user
-                // experiences every step as a real visit — MRU should
-                // reflect that or the next session's cycle order will
-                // disagree with what they just saw on screen. Snapshot
-                // is frozen so this doesn't disrupt the active cycle;
-                // it only affects what subsequent sessions consult.
-                if target_bundle != "<no-bundle-id>" {
-                    promote_bundle_to_front(&target_bundle);
-                }
+                // Deliberately NOT promoted to MRU here: like native macOS,
+                // only the app you LAND on (Cmd release → commit_cycle_session)
+                // becomes most-recent. Promoting every step made a quick
+                // Alt+Tab after cycling through A→B→C jump to B (the last
+                // app passed through) instead of the previously focused app.
                 debug!(target = %target_bundle, pid = target_pid, "cycle_apps: AX activation ok");
             } else {
                 warn!(
@@ -3755,6 +3749,42 @@ mod macos {
             tm.tm_min,
             tm.tm_sec
         )
+    }
+
+    #[cfg(test)]
+    mod cycle_mru_tests {
+        use super::*;
+
+        /// Only the app you LAND on (commit) becomes most-recent — apps passed
+        /// through mid-cycle must not, so a quick Alt+Tab afterwards goes back
+        /// to the app you were in before, like native macOS. One test because
+        /// MRU_BUNDLES / CYCLE_SESSION are process-global.
+        #[test]
+        fn commit_promotes_only_the_landed_app() {
+            const A: &str = "test.cycle.a";
+            const B: &str = "test.cycle.b";
+            const C: &str = "test.cycle.c";
+            // Bogus pids: ax_make_frontmost on a nonexistent pid just errors.
+            let snapshot = vec![
+                (A.to_string(), "A".to_string(), 999_001),
+                (B.to_string(), "B".to_string(), 999_002),
+                (C.to_string(), "C".to_string(), 999_003),
+            ];
+            // A is frontmost (session origin); user cycles A→B→C, releasing on C.
+            *mru_bundles().lock().unwrap() = vec![A.into(), B.into(), C.into()];
+            *CYCLE_SESSION.lock().unwrap() = Some(CycleSession {
+                snapshot,
+                cursor_pid: 999_003,
+                last_press_at: Instant::now(),
+                cmd_release_gen: 0,
+            });
+            commit_cycle_session();
+
+            let mru = mru_bundles().lock().unwrap().clone();
+            assert_eq!(mru, vec![C, A, B], "landed app first, then the origin");
+            // Next session: front = C, first Tab target = index 1 = A, not B.
+            assert_eq!(mru[1], A);
+        }
     }
 
     #[cfg(test)]
