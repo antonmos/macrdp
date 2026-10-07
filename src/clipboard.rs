@@ -185,6 +185,9 @@ impl Collected {
 #[derive(Debug, Default)]
 struct RemoteFetch {
     current: Option<Want>,
+    /// When the request for `current` went out. A reply overdue by more than
+    /// `STALE_REPLY_GRACE` is presumed lost, so a new copy doesn't wait on it.
+    current_since: Option<std::time::Instant>,
     /// Whether `current` is already a retry. A failed representation is
     /// asked for once more before it's skipped: Windows apps commonly
     /// announce a copy twice in quick succession, and the second fetch can
@@ -204,9 +207,10 @@ struct RemoteFetch {
     awaiting_stale: Option<std::time::Instant>,
 }
 
-/// How long a superseded request's reply is waited for before it's presumed
-/// lost. Every FormatDataRequest is answered (data or a failure), so this only
-/// bounds a misbehaving client.
+/// How long after a request went out its reply is waited for before it's
+/// presumed lost. Every FormatDataRequest should be answered (data or a
+/// failure), so this only bounds a misbehaving client — but one was seen
+/// live (Windows App for macOS never answered a connect-time request).
 const STALE_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Convert PNG/TIFF bytes from NSPasteboard into a CF_DIB payload: a
@@ -666,6 +670,7 @@ impl CliprdrBackendFactory for MacCliprdr {
             #[cfg(target_os = "macos")]
             lazy_paste: self.lazy_paste,
             initial_advertise_pending: true,
+            connect_fetch_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             initial_remote_copy_pending: true,
         })
     }
@@ -735,6 +740,12 @@ struct MacCliprdrBackend {
     // silently drop Mac->client sync for that case; caught in review on
     // #173).
     initial_advertise_pending: bool,
+    // Set when the client's connect-time clipboard is being fetched (the
+    // connect-time list wasn't skipped and had something we take). The
+    // deferred connect-time advertise checks it and stands down: the client's
+    // clipboard wins at connect, and advertising the Mac's older one to the
+    // client while fetching the client's would swap the two clipboards.
+    connect_fetch_started: Arc<std::sync::atomic::AtomicBool>,
     // True until the client's first Format List has been handled. That one
     // is the client's connect-time announce of whatever was already on its
     // clipboard, not a live copy — see `skip_connect_time_fetch`. It is
@@ -818,6 +829,7 @@ impl MacCliprdrBackend {
             Some(want) => {
                 debug!(?want, "requesting remote format data");
                 self.fetch.current = Some(want);
+                self.fetch.current_since = Some(std::time::Instant::now());
                 self.fetch.retried = false;
                 self.push(ClipboardMessage::SendInitiatePaste(want.id()));
             }
@@ -1101,8 +1113,16 @@ impl CliprdrBackend for MacCliprdrBackend {
             let rich = self.rich_clipboard;
             let state = self.advertise_state.clone();
             let own = self.own_writes();
+            let fetching_client = self.connect_fetch_started.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(CONNECT_ADVERTISE_DELAY).await;
+                if fetching_client.load(std::sync::atomic::Ordering::Relaxed) {
+                    debug!(
+                        "not advertising the Mac's clipboard at connect: the client's \
+                         connect-time clipboard is being fetched and wins"
+                    );
+                    return;
+                }
                 advertise_wave(&sender, &file_paths, rich, &state, &own).await;
             });
             return;
@@ -1182,14 +1202,27 @@ impl CliprdrBackend for MacCliprdrBackend {
         // previous one. Replies name no format, so if a request is still on
         // the wire its reply must be waited for and discarded before the new
         // copy's first request goes out — see RemoteFetch::awaiting_stale.
+        //
+        // Measured from when that request went out: a reply already overdue
+        // by more than STALE_REPLY_GRACE is presumed lost and not waited for.
+        // Measuring from the new copy instead stalled the clipboard after a
+        // lost reply — the request stayed "current" forever, so every copy
+        // waited on it (seen live: a client that never answered the
+        // connect-time request left the next copies unfetched, and the Mac
+        // kept pasting old content).
         let now = std::time::Instant::now();
-        let awaiting_stale = if self.fetch.current.is_some() {
-            Some(now)
-        } else {
-            self.fetch
-                .awaiting_stale
-                .filter(|since| now.duration_since(*since) < STALE_REPLY_GRACE)
-        };
+        let awaiting_stale = match (self.fetch.current, self.fetch.current_since) {
+            (Some(_), Some(since)) => Some(since),
+            _ => self.fetch.awaiting_stale,
+        }
+        .filter(|since| now.duration_since(*since) < STALE_REPLY_GRACE);
+        if self.fetch.current.is_some() && awaiting_stale.is_none() {
+            warn!(
+                want = ?self.fetch.current,
+                "the client never answered the previous clipboard request; \
+                 presuming it lost and fetching the new copy"
+            );
+        }
         self.fetch = RemoteFetch {
             awaiting_stale,
             ..RemoteFetch::default()
@@ -1209,6 +1242,10 @@ impl CliprdrBackend for MacCliprdrBackend {
                     );
                 }
             }
+        }
+        if connect_time && !self.fetch.queue.is_empty() {
+            self.connect_fetch_started
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if self.fetch.awaiting_stale.is_some() {
             debug!("waiting for the superseded request's reply before fetching the new copy");
@@ -1354,6 +1391,7 @@ impl CliprdrBackend for MacCliprdrBackend {
             if let (Some(w), false) = (want, self.fetch.retried) {
                 debug!(want = ?w, "remote returned error for format data; retrying once");
                 self.fetch.current = Some(w);
+                self.fetch.current_since = Some(std::time::Instant::now());
                 self.fetch.retried = true;
                 self.push(ClipboardMessage::SendInitiatePaste(w.id()));
                 return;
@@ -2090,6 +2128,7 @@ mod tests {
             advertise_state: Arc::new(AdvertiseState::default()),
             lazy_paste: true,
             initial_advertise_pending: true,
+            connect_fetch_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             // Existing tests exercise live copies; the connect-time gate has
             // its own tests below.
             initial_remote_copy_pending: false,
@@ -2335,6 +2374,66 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "our own write must not be advertised"
+        );
+    }
+
+    #[test]
+    fn a_new_copy_does_not_wait_on_a_request_the_client_never_answered() {
+        let (mut backend, mut rx) = test_backend();
+        backend.fetch.current = Some(Want::Text(ClipboardFormatId::CF_UNICODETEXT));
+        backend.fetch.current_since =
+            Some(std::time::Instant::now() - STALE_REPLY_GRACE - std::time::Duration::from_secs(1));
+        let formats = vec![ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)];
+
+        backend.on_remote_copy(&formats);
+
+        assert!(backend.fetch.awaiting_stale.is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ServerEvent::Clipboard(ClipboardMessage::SendInitiatePaste(
+                _
+            )))
+        ));
+    }
+
+    #[test]
+    fn a_new_copy_still_waits_on_a_recent_superseded_request() {
+        let (mut backend, mut rx) = test_backend();
+        backend.fetch.current = Some(Want::Text(ClipboardFormatId::CF_UNICODETEXT));
+        backend.fetch.current_since = Some(std::time::Instant::now());
+        let formats = vec![ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)];
+
+        backend.on_remote_copy(&formats);
+
+        assert!(backend.fetch.awaiting_stale.is_some());
+        assert!(rx.try_recv().is_err(), "must wait for the in-flight reply");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_mac_is_not_advertised_at_connect_while_the_clients_clipboard_is_fetched() {
+        let (mut backend, mut rx) = test_backend();
+        backend.initial_remote_copy_pending = true;
+        pb::write_string("older Mac clipboard");
+        backend
+            .session_end_cc
+            .store(pb::change_count(), std::sync::atomic::Ordering::Relaxed);
+        let formats = vec![ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)];
+
+        // The server calls on_ready and on_remote_copy for the same first list.
+        backend.on_ready();
+        backend.on_remote_copy(&formats);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ServerEvent::Clipboard(ClipboardMessage::SendInitiatePaste(
+                _
+            )))
+        ));
+
+        tokio::time::sleep(CONNECT_ADVERTISE_DELAY + Duration::from_millis(100)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "the Mac's older clipboard must not be advertised over the client's"
         );
     }
 
