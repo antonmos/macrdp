@@ -1807,6 +1807,25 @@ mod macos {
     /// click and then Alt+Tab "switched" to the app you were already in.
     static SWITCHER_FRONT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+    /// Live pid of the `SWITCHER_FRONT` app, for callers that need "the app
+    /// the user is in" outside a switcher session (Cmd+`). Prefers the
+    /// instance AX reports as focused, then the MRU-pinned instance, then the
+    /// first running one. None if unknown or no longer running.
+    fn switcher_front_pid() -> Option<libc::pid_t> {
+        let bundle = SWITCHER_FRONT.lock().ok().and_then(|g| g.clone())?;
+        let alive = |p: libc::pid_t| unsafe { libc::kill(p, 0) == 0 };
+        let is_bundle =
+            |p: libc::pid_t| alive(p) && bundle_identifier_for_pid(p).as_deref() == Some(&bundle);
+        if let Some(p) = ax_focused_application_pid().filter(|p| is_bundle(*p)) {
+            return Some(p);
+        }
+        let pinned = mru_map().lock().ok().and_then(|g| g.get(&bundle).copied());
+        if let Some(p) = pinned.filter(|p| is_bundle(*p)) {
+            return Some(p);
+        }
+        pid_for_bundle(&bundle)
+    }
+
     /// Bundle + time of the last switcher commit. Activation notifications for
     /// apps merely cycled THROUGH are delivered asynchronously and can land
     /// just after Cmd/Alt release; within this window only the landed app is
@@ -3059,6 +3078,7 @@ mod macos {
             value_ptr: *const std::ffi::c_void,
         ) -> core_foundation::base::CFTypeRef;
         fn CFRelease(cf: *const std::ffi::c_void);
+        fn CFRetain(cf: *const std::ffi::c_void) -> *const std::ffi::c_void;
         fn CFEqual(a: *const std::ffi::c_void, b: *const std::ffi::c_void) -> u8;
         fn CFBooleanGetValue(boolean: core_foundation::base::CFTypeRef) -> u8;
         fn CFArrayGetCount(arr: *const std::ffi::c_void) -> isize;
@@ -3412,6 +3432,48 @@ mod macos {
         frontmost_err
     }
 
+    /// A retained AX/CF reference (released on drop) so window elements can
+    /// be kept across Cmd+` presses.
+    struct AxRef(*const std::ffi::c_void);
+    // SAFETY: AXUIElementRef is a CF object; CF retain/release and the AX
+    // calls made on it are thread-safe, and the store is mutex-guarded.
+    unsafe impl Send for AxRef {}
+    impl AxRef {
+        fn retain(p: *const std::ffi::c_void) -> Self {
+            Self(unsafe { CFRetain(p) })
+        }
+    }
+    impl Drop for AxRef {
+        fn drop(&mut self) {
+            unsafe { CFRelease(self.0) };
+        }
+    }
+
+    /// The stable window order Cmd+` steps through, for the app it last
+    /// cycled (pid). Reset when the app changes.
+    static WINDOW_CYCLE_ORDER: std::sync::Mutex<Option<(libc::pid_t, Vec<AxRef>)>> =
+        std::sync::Mutex::new(None);
+
+    /// Merge the stored cycle order with the app's current windows: keep the
+    /// stored windows that still exist, in their stored order, then append new
+    /// ones in their current (z-)order. A fresh app starts from z-order.
+    fn reconcile_window_order<T>(
+        stored: Vec<T>,
+        current: Vec<T>,
+        eq: impl Fn(&T, &T) -> bool,
+    ) -> Vec<T> {
+        let mut order: Vec<T> = stored
+            .into_iter()
+            .filter(|w| current.iter().any(|c| eq(w, c)))
+            .collect();
+        for c in current {
+            if !order.iter().any(|w| eq(w, &c)) {
+                order.push(c);
+            }
+        }
+        order
+    }
+
     /// Cycle through windows of the currently-frontmost app, the way
     /// native Cmd+` does. Pulls the app's window list via
     /// `kAXWindowsAttribute`, locates `kAXFocusedWindow` in that list,
@@ -3425,7 +3487,12 @@ mod macos {
         use std::ffi::c_void;
         use std::ptr;
 
-        // Source-of-truth for "what app is the user actually in": prefer the
+        // Source-of-truth for "what app is the user actually in": first the
+        // switcher's last-wins focus cell (`switcher_front_pid`) — fed by
+        // switcher commits, click/Dock-icon hit-tests, the activation observer
+        // and the AX poller. Observed live: after a click into Chrome, the AX
+        // system-wide focus below still reported the last app the switcher
+        // activated (Finder), so Cmd+` cycled the wrong app. Then the
         // AX system-wide focused-application pid (`ax_focused_application_pid`,
         // the same primitive the MRU poller uses) over
         // `NSWorkspace.frontmostApplication`. NSWorkspace stops tracking
@@ -3437,7 +3504,7 @@ mod macos {
         // reconciliation (`effective_front_pid`) only if AX can't resolve a
         // focused app at all (e.g. a transient AX hiccup).
         let pid = unsafe {
-            match ax_focused_application_pid() {
+            match switcher_front_pid().or_else(ax_focused_application_pid) {
                 Some(ax_pid) => ax_pid,
                 None => {
                     let ws = objc2_app_kit::NSWorkspace::sharedWorkspace();
@@ -3499,23 +3566,39 @@ mod macos {
                 &mut focused,
             )
         };
-        let mut focused_idx: isize = 0;
+        // Step through a STABLE per-app window order, not AXWindows' z-order:
+        // raising the next z-order window puts it in front, so the following
+        // press stepped straight back — Cmd+` ping-ponged between the top two
+        // windows. Native macOS keeps a fixed order and visits every window.
+        let current: Vec<AxRef> = (0..count)
+            .map(|i| AxRef::retain(unsafe { CFArrayGetValueAtIndex(windows.cast(), i) }))
+            .collect();
+        let ax_eq = |a: &AxRef, b: &AxRef| unsafe { CFEqual(a.0, b.0) } != 0;
+        let mut order_guard = WINDOW_CYCLE_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+        let stored = match order_guard.take() {
+            Some((p, order)) if p == pid => order,
+            _ => Vec::new(),
+        };
+        let order = reconcile_window_order(stored, current, ax_eq);
+        let focused_ref = (!focused.is_null()).then(|| AxRef::retain(focused));
         if !focused.is_null() {
-            for i in 0..count {
-                let w = unsafe { CFArrayGetValueAtIndex(windows.cast(), i) };
-                if unsafe { CFEqual(w, focused) } != 0 {
-                    focused_idx = i;
-                    break;
-                }
-            }
             unsafe { CFRelease(focused.cast()) };
         }
+        let focused_idx = focused_ref
+            .as_ref()
+            .and_then(|f| order.iter().position(|w| ax_eq(w, f)))
+            .unwrap_or(0);
+        let count = order.len() as isize;
+        let focused_idx = focused_idx as isize;
         let next_idx = if reverse {
             (focused_idx + count - 1) % count
         } else {
             (focused_idx + 1) % count
         };
-        let next_window = unsafe { CFArrayGetValueAtIndex(windows.cast(), next_idx) };
+        let next_window = order[next_idx as usize].0;
+        // Keep the order alive (and the retained refs) for the next press.
+        *order_guard = Some((pid, order));
+        drop(order_guard);
         // Multi-strategy window raise. Native Cocoa apps (Terminal,
         // Finder) honor AXRaise on a window — that alone is enough.
         // Electron apps (VSCode, Slack, Discord) expose AXRaise but
@@ -3954,6 +4037,21 @@ mod macos {
             note_focus_change(B, true);
             assert_eq!(mru_bundles().lock().unwrap().clone(), vec![B, C, A]);
             assert_eq!(SWITCHER_FRONT.lock().unwrap().as_deref(), Some(B));
+        }
+
+        #[test]
+        fn window_cycle_order_is_stable() {
+            let eq = |a: &i32, b: &i32| a == b;
+            // Fresh app: z-order.
+            let o = reconcile_window_order(vec![], vec![1, 2, 3], eq);
+            assert_eq!(o, vec![1, 2, 3]);
+            // After raising 2, z-order is [2,1,3] — the order must NOT follow,
+            // or the next step from 2 goes back to 1 (the ping-pong bug).
+            let o = reconcile_window_order(o, vec![2, 1, 3], eq);
+            assert_eq!(o, vec![1, 2, 3]);
+            // Closed window dropped, new window appended.
+            let o = reconcile_window_order(o, vec![4, 3, 1], eq);
+            assert_eq!(o, vec![1, 3, 4]);
         }
 
         #[test]
