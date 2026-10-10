@@ -202,6 +202,16 @@ fn should_remap_click(remap_on: bool, ctrl: bool, cmd: bool, alt: bool, excluded
     remap_on && ctrl && !cmd && !alt && !excluded
 }
 
+/// Does a button-down bring the app under the cursor to the front? Only a
+/// plain left click does: right/middle clicks open menus in place, Cmd+click
+/// on a background window acts on it without activating its app, and
+/// Ctrl+click is a secondary click (or, under --map-ctrl-to-cmd, a Cmd+click).
+/// Gates the click hit-test's feed into the app switcher's focus tracking.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_activating_click(left_button: bool, cmd: bool, ctrl: bool) -> bool {
+    left_button && !cmd && !ctrl
+}
+
 #[cfg(test)]
 mod coord_tests {
     use super::{is_remappable_shortcut, map_client_to_display, should_remap_click};
@@ -1712,10 +1722,19 @@ mod macos {
             // to catch an Electron app (VSCode) clicked into in a headless session,
             // which takes key focus without activating. Also feeds the app
             // switcher's MRU (so Alt+Tab after a click-switch returns to the
-            // previous app), hence armed always, not just with the remap. The
-            // hit-test runs off-thread, best-effort; only on button-down.
-            if down {
-                update_focus_from_click(self.last_x, self.last_y);
+            // previous app) — but only for a click that ACTIVATES the app it
+            // lands on: a plain left click. Right/middle clicks, Cmd+click on a
+            // background window and Ctrl+click (a secondary click, or a
+            // remapped Cmd+click) leave the current app in front. The hit-test
+            // runs off-thread, best-effort; only on button-down.
+            let activating_click = super::is_activating_click(
+                matches!(button, CGMouseButton::Left),
+                self.mods.has_cmd(),
+                self.mods.has_ctrl(),
+            );
+            let remap_on = super::MAP_CTRL_TO_CMD.load(std::sync::atomic::Ordering::Relaxed);
+            if down && (activating_click || remap_on) {
+                update_focus_from_click(self.last_x, self.last_y, activating_click);
             }
         }
 
@@ -1824,6 +1843,29 @@ mod macos {
             return Some(p);
         }
         pid_for_bundle(&bundle)
+    }
+
+    /// The AX focused-app pid the focus poller last observed (0 = none yet).
+    /// Every change it sees is already folded into `SWITCHER_FRONT`, so a live
+    /// AX read that DIFFERS from this is newer than anything we've recorded.
+    static AX_POLLER_LAST_SEEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+    /// Which source names the app Cmd+` should act on. The live AX focus is
+    /// trusted when it has changed since the poller last saw it (an unseen,
+    /// newer change); otherwise `SWITCHER_FRONT` wins, because it already
+    /// includes that AX observation plus clicks/commits AX can miss — in the
+    /// headless modes AX was observed still naming the last app the switcher
+    /// activated after a click into another app. Pure (unit-tested).
+    fn pick_front_for_window_cycle(
+        live_ax: Option<libc::pid_t>,
+        ax_is_regular_app: bool,
+        poller_last_seen: libc::pid_t,
+        switcher_front: Option<libc::pid_t>,
+    ) -> Option<libc::pid_t> {
+        match live_ax {
+            Some(ax) if ax_is_regular_app && ax != poller_last_seen => Some(ax),
+            _ => switcher_front.or(live_ax),
+        }
     }
 
     /// Bundle + time of the last switcher commit. Activation notifications for
@@ -2353,7 +2395,7 @@ mod macos {
     /// input thread) and updates the cell before the user's next keystroke. Only
     /// armed when `--map-ctrl-to-cmd` is on (the only consumer). No-op if AX can't
     /// resolve a window/app at the point (menu bar, empty space).
-    fn update_focus_from_click(x: f64, y: f64) {
+    fn update_focus_from_click(x: f64, y: f64, activating_click: bool) {
         crate::runloop_thread::submit(move || unsafe {
             use std::ffi::c_void;
             let systemwide = AXUIElementCreateSystemWide();
@@ -2373,13 +2415,17 @@ mod macos {
             // resolves to the Dock's own pid — and neither the activation
             // observer nor the AX poller reliably reports the switch in the
             // headless modes (observed live). Read the clicked icon's app.
-            let dock_target = if pid_err == AX_ERROR_SUCCESS
+            let dock_target = if activating_click
+                && pid_err == AX_ERROR_SUCCESS
                 && bundle_identifier_for_pid(pid).as_deref() == Some("com.apple.dock")
             {
                 dock_item_app_bundle(element)
             } else {
                 None
             };
+            // A menu-bar status item (menu extra) belongs to its app, but
+            // clicking it opens a menu without activating that app.
+            let menu_extra = ax_string_attr(element, "AXSubrole").as_deref() == Some("AXMenuExtra");
             CFRelease(element as *const c_void);
             if pid_err != AX_ERROR_SUCCESS || pid <= 0 {
                 return;
@@ -2392,8 +2438,10 @@ mod macos {
                 }
                 return;
             }
-            if let Some(bundle) = switcher_bundle_for_pid(pid) {
-                note_focus_change(&bundle, true);
+            if activating_click && !menu_extra {
+                if let Some(bundle) = switcher_bundle_for_pid(pid) {
+                    note_focus_change(&bundle, true);
+                }
             }
             if let Some(bundle) = bundle_identifier_for_pid(pid) {
                 if !bundle.is_empty() {
@@ -2406,27 +2454,38 @@ mod macos {
         });
     }
 
+    /// Copy an AX attribute (+1 retained), or None if absent/failed.
+    unsafe fn ax_copy_attr(
+        element: *mut std::ffi::c_void,
+        name: &'static str,
+    ) -> Option<core_foundation::base::CFTypeRef> {
+        use core_foundation::base::TCFType;
+        let attr = core_foundation::string::CFString::from_static_string(name);
+        let mut v: core_foundation::base::CFTypeRef = std::ptr::null();
+        let err = AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef().cast(), &mut v);
+        (err == AX_ERROR_SUCCESS && !v.is_null()).then_some(v)
+    }
+
+    /// A string-valued AX attribute (e.g. AXRole/AXSubrole) of `element`.
+    unsafe fn ax_string_attr(element: *mut std::ffi::c_void, name: &'static str) -> Option<String> {
+        use core_foundation::base::TCFType;
+        let v = ax_copy_attr(element, name)?;
+        let cf = core_foundation::base::CFType::wrap_under_create_rule(v);
+        cf.downcast::<core_foundation::string::CFString>()
+            .map(|s| s.to_string())
+    }
+
     /// Bundle id of the app a Dock element stands for, if it's an application
     /// Dock item (`AXSubrole == AXApplicationDockItem`; folders, stacks, the
     /// Trash and minimized-window tiles return None). Read from the item's
     /// `AXURL` (the app's bundle path). `element` is borrowed, not released.
     unsafe fn dock_item_app_bundle(element: *mut std::ffi::c_void) -> Option<String> {
-        use core_foundation::base::{CFTypeRef, TCFType};
-        use core_foundation::string::CFString;
+        use core_foundation::base::TCFType;
         use core_foundation::url::CFURL;
-        let copy_attr = |name: &'static str| -> Option<CFTypeRef> {
-            let attr = CFString::from_static_string(name);
-            let mut v: CFTypeRef = std::ptr::null();
-            let err =
-                AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef().cast(), &mut v);
-            (err == AX_ERROR_SUCCESS && !v.is_null()).then_some(v)
-        };
-        let subrole = copy_attr("AXSubrole")?;
-        let subrole = CFString::wrap_under_create_rule(subrole.cast());
-        if subrole != "AXApplicationDockItem" {
+        if ax_string_attr(element, "AXSubrole").as_deref() != Some("AXApplicationDockItem") {
             return None;
         }
-        let url = copy_attr("AXURL")?;
+        let url = ax_copy_attr(element, "AXURL")?;
         let path = CFURL::wrap_under_create_rule(url.cast()).to_path()?;
         let ns = objc2_foundation::NSString::from_str(path.to_str()?);
         let bundle = objc2_foundation::NSBundle::bundleWithPath(&ns)?;
@@ -2455,6 +2514,7 @@ mod macos {
 
     fn ax_focus_mru_poller_loop() {
         let mut last_seen_pid: libc::pid_t = 0;
+        // (mirrored into AX_POLLER_LAST_SEEN for Cmd+`'s freshness check)
         loop {
             // Park while input-idle: no RDP input in the last minute (or ever)
             // means nobody is Cmd+Tab-ing or typing, so the system-wide AX
@@ -2473,6 +2533,7 @@ mod macos {
                 continue;
             }
             last_seen_pid = pid;
+            AX_POLLER_LAST_SEEN.store(pid, std::sync::atomic::Ordering::Relaxed);
 
             // Skip while a Cmd+Tab cycle is in flight — our own AX
             // activations are causing the focus changes the poller is
@@ -3487,12 +3548,13 @@ mod macos {
         use std::ffi::c_void;
         use std::ptr;
 
-        // Source-of-truth for "what app is the user actually in": first the
-        // switcher's last-wins focus cell (`switcher_front_pid`) — fed by
-        // switcher commits, click/Dock-icon hit-tests, the activation observer
-        // and the AX poller. Observed live: after a click into Chrome, the AX
-        // system-wide focus below still reported the last app the switcher
-        // activated (Finder), so Cmd+` cycled the wrong app. Then the
+        // Source-of-truth for "what app is the user actually in": see
+        // `pick_front_for_window_cycle` — a live AX focus the poller hasn't
+        // seen yet, else the switcher's last-wins cell (`switcher_front_pid`,
+        // fed by commits, click/Dock-icon hit-tests, the activation observer
+        // and the poller). Observed live: after a click into Chrome, AX
+        // still reported the last app the switcher activated (Finder), so
+        // trusting AX alone cycled the wrong app. Historically: the
         // AX system-wide focused-application pid (`ax_focused_application_pid`,
         // the same primitive the MRU poller uses) over
         // `NSWorkspace.frontmostApplication`. NSWorkspace stops tracking
@@ -3504,7 +3566,14 @@ mod macos {
         // reconciliation (`effective_front_pid`) only if AX can't resolve a
         // focused app at all (e.g. a transient AX hiccup).
         let pid = unsafe {
-            match switcher_front_pid().or_else(ax_focused_application_pid) {
+            let live_ax = ax_focused_application_pid();
+            let ax_is_regular_app = live_ax.and_then(switcher_bundle_for_pid).is_some();
+            match pick_front_for_window_cycle(
+                live_ax,
+                ax_is_regular_app,
+                AX_POLLER_LAST_SEEN.load(std::sync::atomic::Ordering::Relaxed),
+                switcher_front_pid(),
+            ) {
                 Some(ax_pid) => ax_pid,
                 None => {
                     let ws = objc2_app_kit::NSWorkspace::sharedWorkspace();
@@ -4052,6 +4121,46 @@ mod macos {
             // Closed window dropped, new window appended.
             let o = reconcile_window_order(o, vec![4, 3, 1], eq);
             assert_eq!(o, vec![1, 3, 4]);
+        }
+
+        #[test]
+        fn window_cycle_front_selection() {
+            // AX changed since the poller looked → newer than SWITCHER_FRONT.
+            assert_eq!(
+                pick_front_for_window_cycle(Some(7), true, 3, Some(5)),
+                Some(7)
+            );
+            // AX unchanged (possibly stale) → SWITCHER_FRONT, which already
+            // folds in that observation plus clicks AX missed.
+            assert_eq!(
+                pick_front_for_window_cycle(Some(3), true, 3, Some(5)),
+                Some(5)
+            );
+            // AX names a non-regular app (Dock etc.) → not trusted.
+            assert_eq!(
+                pick_front_for_window_cycle(Some(7), false, 3, Some(5)),
+                Some(5)
+            );
+            // Nothing recorded yet → whatever AX says.
+            assert_eq!(pick_front_for_window_cycle(Some(3), true, 3, None), Some(3));
+            assert_eq!(pick_front_for_window_cycle(None, false, 3, None), None);
+        }
+
+        #[test]
+        fn only_plain_left_clicks_switch_apps() {
+            assert!(super::super::is_activating_click(true, false, false));
+            assert!(
+                !super::super::is_activating_click(false, false, false),
+                "right/middle"
+            );
+            assert!(
+                !super::super::is_activating_click(true, true, false),
+                "Cmd+click"
+            );
+            assert!(
+                !super::super::is_activating_click(true, false, true),
+                "Ctrl+click"
+            );
         }
 
         #[test]
