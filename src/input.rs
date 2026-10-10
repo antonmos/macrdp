@@ -2350,8 +2350,27 @@ mod macos {
             }
             let mut pid: libc::pid_t = 0;
             let pid_err = AXUIElementGetPid(element, &mut pid);
+            // A click on a Dock app icon activates THAT app, but the hit-test
+            // resolves to the Dock's own pid — and neither the activation
+            // observer nor the AX poller reliably reports the switch in the
+            // headless modes (observed live). Read the clicked icon's app.
+            let dock_target = if pid_err == AX_ERROR_SUCCESS
+                && bundle_identifier_for_pid(pid).as_deref() == Some("com.apple.dock")
+            {
+                dock_item_app_bundle(element)
+            } else {
+                None
+            };
             CFRelease(element as *const c_void);
             if pid_err != AX_ERROR_SUCCESS || pid <= 0 {
+                return;
+            }
+            if let Some(bundle) = dock_target {
+                debug!(bundle = %bundle, "click focus (Dock icon)");
+                note_focus_change(&bundle, true);
+                if let Ok(mut g) = LAST_FOCUS_BUNDLE.lock() {
+                    *g = Some(bundle);
+                }
                 return;
             }
             if let Some(bundle) = switcher_bundle_for_pid(pid) {
@@ -2366,6 +2385,36 @@ mod macos {
                 }
             }
         });
+    }
+
+    /// Bundle id of the app a Dock element stands for, if it's an application
+    /// Dock item (`AXSubrole == AXApplicationDockItem`; folders, stacks, the
+    /// Trash and minimized-window tiles return None). Read from the item's
+    /// `AXURL` (the app's bundle path). `element` is borrowed, not released.
+    unsafe fn dock_item_app_bundle(element: *mut std::ffi::c_void) -> Option<String> {
+        use core_foundation::base::{CFTypeRef, TCFType};
+        use core_foundation::string::CFString;
+        use core_foundation::url::CFURL;
+        let copy_attr = |name: &'static str| -> Option<CFTypeRef> {
+            let attr = CFString::from_static_string(name);
+            let mut v: CFTypeRef = std::ptr::null();
+            let err =
+                AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef().cast(), &mut v);
+            (err == AX_ERROR_SUCCESS && !v.is_null()).then_some(v)
+        };
+        let subrole = copy_attr("AXSubrole")?;
+        let subrole = CFString::wrap_under_create_rule(subrole.cast());
+        if subrole != "AXApplicationDockItem" {
+            return None;
+        }
+        let url = copy_attr("AXURL")?;
+        let path = CFURL::wrap_under_create_rule(url.cast()).to_path()?;
+        let ns = objc2_foundation::NSString::from_str(path.to_str()?);
+        let bundle = objc2_foundation::NSBundle::bundleWithPath(&ns)?;
+        bundle
+            .bundleIdentifier()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
     }
 
     /// Find the pid of the first running app matching `bundle`. Walks
