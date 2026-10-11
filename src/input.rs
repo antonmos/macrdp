@@ -205,8 +205,22 @@ fn should_remap_click(remap_on: bool, ctrl: bool, cmd: bool, alt: bool, excluded
 #[cfg(test)]
 mod coord_tests {
     use super::{
-        is_remappable_shortcut, map_client_to_display, should_alt_q_quit, should_remap_click,
+        is_remappable_shortcut, map_client_to_display, remove_switcher_selection,
+        should_alt_q_quit, should_remap_click,
     };
+
+    /// Quitting from the switcher keeps the selection in place (the next app
+    /// slides under it), wraps when the last entry goes, and ends at empty.
+    #[test]
+    fn switcher_quit_moves_selection_to_the_next_app() {
+        let mut apps = vec!["A", "B", "C"];
+        assert_eq!(remove_switcher_selection(&mut apps, 1), Some(1));
+        assert_eq!(apps, ["A", "C"]);
+        assert_eq!(remove_switcher_selection(&mut apps, 1), Some(0));
+        assert_eq!(apps, ["A"]);
+        assert_eq!(remove_switcher_selection(&mut apps, 0), None);
+        assert!(apps.is_empty());
+    }
 
     /// `--alt-q-quit` fires for exactly one row: flag on + plain Option. In
     /// particular Option+Shift+Q must NOT become Cmd+Shift+Q (log out).
@@ -415,6 +429,21 @@ pub fn set_alt_q_quit(on: bool) {
 /// they keep their own meaning. Unit-tested on every target.
 fn should_alt_q_quit(on: bool, opt: bool, cmd: bool, ctrl: bool, shift: bool) -> bool {
     on && opt && !cmd && !ctrl && !shift
+}
+
+/// Drop the switcher's selected entry at `idx` (Q pressed in the switcher) and
+/// return the index the selection moves to: the entry that slid into `idx`,
+/// wrapping to the start when the last one was removed — the native Cmd+Tab
+/// behaviour. `None` once the list is empty. Pure, so it's unit-tested on
+/// every target.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn remove_switcher_selection<T>(items: &mut Vec<T>, idx: usize) -> Option<usize> {
+    items.remove(idx);
+    if items.is_empty() {
+        None
+    } else {
+        Some(idx % items.len())
+    }
 }
 
 /// When true, drive the `macrdphud` overlay helper so the remote client sees a
@@ -1516,6 +1545,15 @@ mod macos {
                 return true;
             }
 
+            // Q while the switcher is up (Cmd+Tab, or Option+Tab with
+            // --alt-tab-switch, still held): quit the HIGHLIGHTED app, as the
+            // native switcher does. Checked before the Option+Q → Cmd+Q rule
+            // below, which would hit the frontmost app instead. Needs no flag:
+            // a session only exists while the switcher's modifier is held.
+            if (cmd || opt) && !ctrl && vk == VK_Q && quit_cycle_selection() {
+                return true;
+            }
+
             // Opt+Q → Cmd+Q (opt-in via --alt-q-quit): quit the focused app
             // from a Windows client without the Windows key. The whole tap is
             // posted here on key-down; the caller swallows the matching key-up
@@ -1930,6 +1968,80 @@ mod macos {
     /// app, never swallow the arrow).
     fn cycle_session_active() -> bool {
         CYCLE_SESSION.lock().is_ok_and(|g| g.is_some())
+    }
+
+    /// Q pressed while the switcher is up: quit the HIGHLIGHTED app, like the
+    /// native Cmd+Tab switcher, rather than whatever happens to be frontmost.
+    /// Each Tab step already activates the highlighted app, but posting Cmd+Q
+    /// would race that activation and leave the quit app in the frozen
+    /// snapshot (and the HUD). So: drop it from the snapshot, ask it to quit
+    /// (`terminate` is a normal quit — unsaved-changes prompts still appear),
+    /// and keep the session going with the selection on the next app, which we
+    /// activate the same way a Tab step does. The last app gone ends the
+    /// session. Returns false when no session is active (the caller lets the
+    /// key through). The quit and the AX/HUD work run after the session lock
+    /// is released, like `commit_cycle_session`.
+    fn quit_cycle_selection() -> bool {
+        let (quit_pid, next) = {
+            let Ok(mut guard) = CYCLE_SESSION.lock() else {
+                return false;
+            };
+            let Some(session) = guard.as_mut() else {
+                return false;
+            };
+            let Some(idx) = session
+                .snapshot
+                .iter()
+                .position(|(_, _, p)| *p == session.cursor_pid)
+            else {
+                return false;
+            };
+            let quit_pid = session.cursor_pid;
+            match super::remove_switcher_selection(&mut session.snapshot, idx) {
+                Some(next_idx) => {
+                    session.cursor_pid = session.snapshot[next_idx].2;
+                    session.last_press_at = Instant::now();
+                    let apps: Vec<(i32, String)> = session
+                        .snapshot
+                        .iter()
+                        .map(|(_, name, pid)| (*pid, name.clone()))
+                        .collect();
+                    (quit_pid, Some((apps, next_idx, session.cursor_pid)))
+                }
+                None => {
+                    *guard = None;
+                    (quit_pid, None)
+                }
+            }
+        };
+
+        // SAFETY: NSRunningApplication lookup + terminate are documented
+        // thread-safe; a pid that already exited just yields None.
+        let sent = unsafe {
+            NSRunningApplication::runningApplicationWithProcessIdentifier(quit_pid)
+                .is_some_and(|app| app.terminate())
+        };
+        tracing::info!(pid = quit_pid, sent, "app switcher: quit the selected app");
+
+        let hud = super::APP_SWITCHER_HUD.load(std::sync::atomic::Ordering::Relaxed);
+        match next {
+            Some((apps, next_idx, next_pid)) => {
+                if hud {
+                    crate::switcher_hud::show(apps, next_idx);
+                }
+                ax_make_frontmost(
+                    next_pid,
+                    super::UNMINIMIZE_ON_SWITCH.load(std::sync::atomic::Ordering::Relaxed),
+                    false,
+                );
+            }
+            None => {
+                if hud {
+                    crate::switcher_hud::hide();
+                }
+            }
+        }
+        true
     }
 
     /// Incremented every time both Cmd halves transition to released
