@@ -1207,7 +1207,17 @@ mod macos {
             // native pixels while upscaling the desktop image to their window,
             // which can make a native-size pointer look small. Clamped to a
             // sane band; the hotspot stays accurate at any value.
-            let cursor_scale = cursor_scale_multiplier.clamp(0.1, 8.0);
+            let mut cursor_scale = cursor_scale_multiplier.clamp(0.1, 8.0);
+            // Exception: on the HiDPI virtual display SkyLight returns the 1×
+            // cursor (measured: a 23×22 bitmap whose NSCursor has 23×22 points,
+            // on a 2× display with the lid closed), so a client served 2 px per
+            // point would get a pointer half the size of everything else.
+            // Scale it by the session's pixels per point: 2 for a Retina
+            // client, 1 for a 1× client served the same display.
+            if crate::virtual_display::is_hidpi_virtual_display(display.display_id()) {
+                cursor_scale *= f64::from(width) / f64::from(native_w.max(1));
+                cursor_scale = cursor_scale.clamp(0.1, 8.0);
+            }
             tracing::debug!(
                 native_w,
                 native_h,
@@ -1482,7 +1492,11 @@ mod macos {
                 // looping back to the top (where the flush burst re-submits the
                 // last frame, and a settled resize gets picked up promptly
                 // instead of stalling until the next real desktop change).
-                // (Neither pending — the common idle case — blocks normally.)
+                // Neither pending — the common idle case — still wakes at the
+                // cursor-poll interval, so a pointer-shape change on a static
+                // screen (the resize arrows at a window edge, which change no
+                // pixels because the captured frame excludes the cursor) gets
+                // polled and sent instead of waiting for the next redraw.
                 let sample = if self.flush_remaining > 0 || self.pending_resize.has_pending() {
                     match tokio::time::timeout(self.frame_interval, self.stream.next()).await {
                         Ok(Some(sample)) => sample,
@@ -1506,9 +1520,10 @@ mod macos {
                         }
                     }
                 } else {
-                    match self.stream.next().await {
-                        Some(sample) => sample,
-                        None => return Ok(None),
+                    match tokio::time::timeout(CURSOR_POLL_INTERVAL, self.stream.next()).await {
+                        Ok(Some(sample)) => sample,
+                        Ok(None) => return Ok(None),
+                        Err(_) => continue,
                     }
                 };
 

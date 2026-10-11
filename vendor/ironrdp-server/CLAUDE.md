@@ -2049,3 +2049,15 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     installs it only for `--virtual-display-hidpi=auto`, which re-modes the
     virtual display HiDPI for a 2× client; otherwise `None` and byte-identical.
 
+
+(27) 32-bpp pointers carry an AND mask (NOT upstreamed; added 2026-10-11).
+    `UpdateEncoder::rgba_pointer` used to send `and_mask: &[]`. MS-RDPBCGR
+    2.2.9.1.1.4.4 makes the 1-bpp AND mask part of every color pointer, and
+    Windows App for macOS (build 68651) never changed its pointer from the
+    default arrow while macrdp was sending shapes (SkyLight reported I-beam,
+    hand and resize cursors the whole time). `rgba_and_mask` builds it: a bit
+    set where alpha is 0, scan lines padded to 2 bytes, same row order as the
+    XOR data. mstsc and FreeRDP accepted the empty mask, which is why this went
+    unnoticed. Upstream has the same empty mask (`ironrdp-server`
+    `rgba_pointer`/`large_pointer`), so this is an upstream candidate once it's
+    verified live.
