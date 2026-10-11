@@ -204,7 +204,33 @@ fn should_remap_click(remap_on: bool, ctrl: bool, cmd: bool, alt: bool, excluded
 
 #[cfg(test)]
 mod coord_tests {
-    use super::{is_remappable_shortcut, map_client_to_display, should_remap_click};
+    use super::{
+        is_remappable_shortcut, map_client_to_display, should_alt_q_quit, should_remap_click,
+    };
+
+    /// `--alt-q-quit` fires for exactly one row: flag on + plain Option. In
+    /// particular Option+Shift+Q must NOT become Cmd+Shift+Q (log out).
+    #[test]
+    fn alt_q_quit_decision_table() {
+        // (on, opt, cmd, ctrl, shift) -> expected
+        let only_quitting_row = (true, true, false, false, false);
+        for on in [false, true] {
+            for opt in [false, true] {
+                for cmd in [false, true] {
+                    for ctrl in [false, true] {
+                        for shift in [false, true] {
+                            let row = (on, opt, cmd, ctrl, shift);
+                            assert_eq!(
+                                should_alt_q_quit(on, opt, cmd, ctrl, shift),
+                                row == only_quitting_row,
+                                "unexpected verdict for {row:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// The full mouse Ctrl→Cmd decision table. Exactly one row remaps: the
     /// flag is on, a plain Ctrl is held (no Cmd, no Alt), and the frontmost app
@@ -371,6 +397,26 @@ pub fn set_alt_backtick_switch(on: bool) {
     ALT_BACKTICK_SWITCH.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// When true, Option+Q (i.e. Alt+Q forwarded from the client) is delivered to
+/// the focused app as Cmd+Q, so a Windows client can quit Mac apps without the
+/// Windows key (which mstsc gates when windowed, and which the macOS Windows
+/// App forwards only as a tap). Opt-in via `--alt-q-quit`; off by default so
+/// Option+Q otherwise reaches remote apps as a normal key (it types `œ` on the
+/// US layout). Plain Option only — see `should_alt_q_quit`.
+static ALT_Q_QUIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_alt_q_quit(on: bool) {
+    ALT_Q_QUIT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Pure decision table for `--alt-q-quit`: should this Q key-down be posted
+/// as Cmd+Q? Only for a PLAIN Option — Shift is excluded because the result
+/// would be Cmd+Shift+Q (log out), and Cmd/Ctrl combos are left alone so
+/// they keep their own meaning. Unit-tested on every target.
+fn should_alt_q_quit(on: bool, opt: bool, cmd: bool, ctrl: bool, shift: bool) -> bool {
+    on && opt && !cmd && !ctrl && !shift
+}
+
 /// When true, drive the `macrdphud` overlay helper so the remote client sees a
 /// visual app switcher during Cmd+Tab / Option+Tab. Opt-in via
 /// `--app-switcher-hud`; off by default. The switch itself works the same either
@@ -493,6 +539,7 @@ mod macos {
     const VK_CAPS_LOCK: u16 = 0x39;
     const VK_G: u16 = 0x05; // kVK_ANSI_G — the on-demand "gather windows" chord
     const VK_R: u16 = 0x0F; // kVK_ANSI_R — the on-demand "A/V resync" chord
+    const VK_Q: u16 = 0x0C; // kVK_ANSI_Q — Option+Q → Cmd+Q under --alt-q-quit
     const VK_LEFT: u16 = 0x7B; // kVK_LeftArrow — step the app switcher backward while it's up
     const VK_RIGHT: u16 = 0x7C; // kVK_RightArrow — step the app switcher forward while it's up
 
@@ -1351,6 +1398,39 @@ mod macos {
             }
         }
 
+        /// Post a full `Cmd+<vk>` tap in place of the held `Option+<vk>`
+        /// (--alt-q-quit). Same shape as `post_ctrl_as_cmd`, but the down and
+        /// up go out together: present Cmd-held (Option cleared) to both
+        /// modifier views, tap the key with those flags, then restore the real
+        /// state (Option still physically held) via `post_flags_changed`.
+        fn post_alt_as_cmd_tap(&self, vk: u16) {
+            let mut bits = self.mods.cg_flags().bits();
+            bits &= !CGEventFlags::CGEventFlagAlternate.bits();
+            bits &= !(NX_DEVICE_L_ALT | NX_DEVICE_R_ALT);
+            bits |= CGEventFlags::CGEventFlagCommand.bits();
+            bits |= NX_DEVICE_L_CMD;
+            let swapped = CGEventFlags::from_bits_retain(bits);
+
+            for source in [&self.source, &self.source_hid] {
+                let Ok(ev) = CGEvent::new_keyboard_event(source.clone(), VK_LCMD, true) else {
+                    warn!("CGEvent::new_keyboard_event failed (alt→cmd flags)");
+                    continue;
+                };
+                ev.set_flags(swapped);
+                ev.set_type(CGEventType::FlagsChanged);
+                ev.post(CGEventTapLocation::HID);
+            }
+            for down in [true, false] {
+                if let Ok(ev) = CGEvent::new_keyboard_event(self.source.clone(), vk, down) {
+                    ev.set_flags(swapped);
+                    ev.post(CGEventTapLocation::HID);
+                } else {
+                    warn!(vk, down, "CGEvent::new_keyboard_event failed (alt→cmd key)");
+                }
+            }
+            self.post_flags_changed(VK_LCMD);
+        }
+
         /// Match the current modifier state + non-modifier vk against the
         /// set of symbolic hotkeys we re-implement. Returns true if we
         /// handled it (and the caller should suppress the keystroke).
@@ -1433,6 +1513,24 @@ mod macos {
                 && vk == VK_GRAVE
             {
                 ax_cycle_windows_of_front(shift);
+                return true;
+            }
+
+            // Opt+Q → Cmd+Q (opt-in via --alt-q-quit): quit the focused app
+            // from a Windows client without the Windows key. The whole tap is
+            // posted here on key-down; the caller swallows the matching key-up
+            // via `consumed_keys`.
+            if vk == VK_Q
+                && super::should_alt_q_quit(
+                    super::ALT_Q_QUIT.load(std::sync::atomic::Ordering::Relaxed),
+                    opt,
+                    cmd,
+                    ctrl,
+                    shift,
+                )
+            {
+                self.post_alt_as_cmd_tap(VK_Q);
+                tracing::debug!("Option+Q → Cmd+Q (--alt-q-quit)");
                 return true;
             }
 
