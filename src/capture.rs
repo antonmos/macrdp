@@ -641,8 +641,8 @@ impl CaptureDisplay {
             return (width, height);
         };
         let mut vd = vd.lock().expect("virtual display mutex poisoned");
-        let (cur_w, cur_h) = vd.size_pts();
-        if (cur_w as u16, cur_h as u16) == (width, height) {
+        // Compare in pixels: on a HiDPI vd the points are half the session size.
+        if vd.mode_px() == (u32::from(width), u32::from(height)) {
             return (width, height);
         }
         match vd.resize(u32::from(width), u32::from(height)) {
@@ -787,6 +787,7 @@ impl CaptureDisplay {
                 (width, height)
             }
             Err(e) => {
+                let (cur_w, cur_h) = vd.mode_px();
                 let (w, h) = (cur_w as u16, cur_h as u16);
                 tracing::warn!(
                     error = ?e,
@@ -1098,7 +1099,13 @@ mod macos {
             // framebuffer. Only a size matching neither (explicit
             // --width/--height that asks SCK to scale) forces full frames,
             // because then dirty-rects arrive in source coords and misalign.
-            let (backing_w, backing_h) = {
+            let (backing_w, backing_h) = if crate::virtual_display::is_hidpi_virtual_display(
+                display.display_id(),
+            ) {
+                // `CGDisplayCopyDisplayMode` returns nothing for a virtual
+                // display, so the HiDPI vd's 2× backing is derived here.
+                (native_w.saturating_mul(2), native_h.saturating_mul(2))
+            } else {
                 use core_graphics::display::CGDisplay;
                 CGDisplay::new(display.display_id())
                     .display_mode()

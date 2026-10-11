@@ -27,6 +27,20 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   silently ignored) — resize needs the client-resolution
                           #   auto-adopt path, which --hidpi pins off, same as it
                           #   pins the initial connect-time size.
+--virtual-display-hidpi   # make the --virtual-display a Retina-style 2x display.
+                          #   The session size (--width/--height, or what the
+                          #   client requests) is its PIXEL count; macOS lays the
+                          #   UI out at half that in points — e.g. a client asking
+                          #   for 3456x2168 gets a sharp desktop that looks like
+                          #   1728x1084. Set VD_WIDTH/VD_HEIGHT to twice the size
+                          #   you want the UI to look. Scales for session widths of
+                          #   ~1440-4096 px; outside that macOS runs it 1:1 (logged
+                          #   as a warning). ~4x the pixels of the same apparent
+                          #   size without it. Live resize and auto-adopt keep
+                          #   working. Needs --virtual-display. Config: VD_HIDPI=1.
+                          #   The client must request Retina pixels (Windows App:
+                          #   "Optimize for Retina displays"); a client asking for
+                          #   point-size resolution gets UI twice as big.
 --fps N                   # default 60 with --enable-h264, else 15
 --cursor-scale MULT       # pointer size multiplier (default 1.0 = native macOS
                           #   size, hotspot-exact). Bump (e.g. 1.5/2.0) if your

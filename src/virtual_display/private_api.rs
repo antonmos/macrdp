@@ -152,6 +152,10 @@ fn class_required(name: &str) -> Result<&'static AnyClass> {
 pub(super) struct Handle {
     raw: *mut AnyObject,
     display_id: u32,
+    /// Whether the display was registered with `hiDPI=1`. Re-applied on
+    /// every live resize, since `applySettings:` replaces the whole
+    /// settings object (a resize that dropped it would fall back to 1:1).
+    hidpi: bool,
 }
 
 // SAFETY: CGVirtualDisplay is a CF-bridged Obj-C class; CF types are
@@ -171,7 +175,7 @@ impl Handle {
     /// resolution). The new mode must fit the descriptor's max dimensions
     /// (8192×8192, set in `create`).
     pub(super) fn apply_mode(&self, width: u32, height: u32, refresh_hz: u32) -> Result<()> {
-        apply_single_mode(self.raw, width, height, refresh_hz)
+        apply_single_mode(self.raw, width, height, refresh_hz, self.hidpi)
     }
 }
 
@@ -179,11 +183,17 @@ impl Handle {
 /// `display`. Shared by `create` (initial registration) and
 /// `Handle::apply_mode` (live resize). The temporaries are leaked, same
 /// rationale as in `create` — tiny, rare, and obviously double-free-proof.
+///
+/// With `hidpi`, macOS reads the mode's width/height as POINTS and backs the
+/// display with a 2× pixel framebuffer — provided the descriptor's physical
+/// size makes that framebuffer Retina-dense (see `create`); otherwise it picks
+/// a 1:1 duplicate mode at twice the point size instead.
 fn apply_single_mode(
     display: *mut AnyObject,
     width: u32,
     height: u32,
     refresh_hz: u32,
+    hidpi: bool,
 ) -> Result<()> {
     let settings_class = class_required("CGVirtualDisplaySettings")?;
     let mode_class = class_required("CGVirtualDisplayMode")?;
@@ -207,7 +217,7 @@ fn apply_single_mode(
         if settings.is_null() {
             return Err(anyhow!("[CGVirtualDisplaySettings init] returned nil"));
         }
-        let _: () = msg_send![settings, setHiDPI: 0u32];
+        let _: () = msg_send![settings, setHiDPI: u32::from(hidpi)];
         let _: () = msg_send![settings, setModes: modes];
 
         let ok: bool = msg_send![display, applySettings: settings];
@@ -239,7 +249,19 @@ impl Drop for Handle {
 /// are intentionally leaked — they're tiny, only allocated once per
 /// process, and avoiding manual `release` calls keeps the code
 /// obviously free of double-free hazards.
-pub(super) fn create(width: u32, height: u32, refresh_hz: u32, name: &str) -> Result<Handle> {
+///
+/// `width`/`height` are the mode size: pixels when `hidpi` is false, points
+/// (backed by 2× pixels) when it is true. `size_mm` is the physical panel
+/// size the display reports; with `hidpi` it decides whether macOS actually
+/// selects the scaled mode, so the caller picks it (`hidpi_panel_size_mm`).
+pub(super) fn create(
+    width: u32,
+    height: u32,
+    refresh_hz: u32,
+    name: &str,
+    hidpi: bool,
+    size_mm: (f64, f64),
+) -> Result<Handle> {
     let desc_class = class_required("CGVirtualDisplayDescriptor")?;
     let display_class = class_required("CGVirtualDisplay")?;
 
@@ -263,9 +285,17 @@ pub(super) fn create(width: u32, height: u32, refresh_hz: u32, name: &str) -> Re
         // protocol-legal mode, including ones larger than the first.
         let _: () = msg_send![desc, setMaxPixelsWide: 8192u32];
         let _: () = msg_send![desc, setMaxPixelsHigh: 8192u32];
-        // 600x338 mm ≈ a 27-inch 16:9 panel. Just a label.
-        let _: () = msg_send![desc, setSizeInMillimeters: CGSize { width: 600.0, height: 338.0 }];
-        let _: () = msg_send![desc, setProductID: 0x6D616372u32]; // "macr"
+        // Not just a label when hiDPI is set: macOS chooses between the
+        // scaled mode and its 1:1 duplicate by pixel density, which it
+        // derives from this size. Fixed for the display's lifetime.
+        let _: () = msg_send![
+            desc,
+            setSizeInMillimeters: CGSize { width: size_mm.0, height: size_mm.1 }
+        ];
+        // A separate product id for HiDPI: macOS remembers a display's chosen
+        // mode by vendor/product, and the regular display has always run 1:1.
+        let product: u32 = if hidpi { 0x6D616348 } else { 0x6D616372 }; // "macH" / "macr"
+        let _: () = msg_send![desc, setProductID: product];
         let _: () = msg_send![desc, setVendorID: 0x6D616372u32];
         // Was hardcoded to 1: a second macrdp process (e.g. two concurrent
         // installs, or dev testing alongside a running instance) registering a
@@ -288,7 +318,7 @@ pub(super) fn create(width: u32, height: u32, refresh_hz: u32, name: &str) -> Re
         //      the applySettings: call is what actually registers the display
         //      with the WindowServer so it appears in Displays. Shared with
         //      the live-resize path (`Handle::apply_mode`).
-        if let Err(e) = apply_single_mode(display, width, height, refresh_hz) {
+        if let Err(e) = apply_single_mode(display, width, height, refresh_hz, hidpi) {
             let _: () = msg_send![display, release];
             return Err(e);
         }
@@ -306,6 +336,7 @@ pub(super) fn create(width: u32, height: u32, refresh_hz: u32, name: &str) -> Re
         Ok(Handle {
             raw: display,
             display_id,
+            hidpi,
         })
     }
 }

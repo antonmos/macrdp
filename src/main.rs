@@ -314,6 +314,17 @@ struct Args {
     #[arg(long)]
     virtual_display: bool,
 
+    /// Make the virtual display a Retina-style HiDPI display: the session
+    /// size (--width/--height, or the size the client requests) is its pixel
+    /// count, and macOS lays the UI out at HALF that in points — so a client
+    /// asking for 3456×2168 gets a sharp desktop that looks like 1728×1084,
+    /// instead of tiny UI. Set --width/--height (VD_WIDTH/VD_HEIGHT) to twice
+    /// the size you want the UI to look. Costs ~4× the pixels of the same
+    /// apparent size without it (heavier encode, decode and bandwidth).
+    /// Only valid with --virtual-display. macOS-only.
+    #[arg(long)]
+    virtual_display_hidpi: bool,
+
     /// Promote the virtual display to be the system's primary display
     /// for the duration of the run — the one with the menu bar, where
     /// new app windows open. Use this when you want to drive the
@@ -2378,6 +2389,9 @@ fn args_from_config(path: &Path) -> Result<Args> {
         argv.push(get("VD_WIDTH", "1920"));
         argv.push("--height".into());
         argv.push(get("VD_HEIGHT", "1080"));
+        if on("VD_HIDPI", false) {
+            argv.push("--virtual-display-hidpi".into());
+        }
         // Back-compat: old configs set CAPTURE_PRIMARY=1 with no PRIMARY_MODE.
         let mut primary_mode = get("PRIMARY_MODE", "none");
         if primary_mode == "none" && on("CAPTURE_PRIMARY", false) {
@@ -2672,6 +2686,9 @@ async fn async_main() -> Result<()> {
         tokio::spawn(crate::stats::serve(port, stats));
     }
 
+    if args.virtual_display_hidpi && !args.virtual_display {
+        return Err(anyhow!("--virtual-display-hidpi requires --virtual-display"));
+    }
     if args.make_primary && !args.virtual_display {
         return Err(anyhow!(
             "--make-primary requires --virtual-display (it promotes the \
@@ -2868,12 +2885,18 @@ async fn async_main() -> Result<()> {
             // 60 Hz: real displays bottom out around 24 Hz. Refresh rate is
             // metadata here (capture cadence is governed by --fps); pass a
             // safe value so CGVirtualDisplay doesn't reject the mode.
-            let vd = virtual_display::VirtualDisplay::new(u32::from(w), u32::from(h), 60)
-                .context("attaching virtual display")?;
+            let vd = virtual_display::VirtualDisplay::new(
+                u32::from(w),
+                u32::from(h),
+                60,
+                args.virtual_display_hidpi,
+            )
+            .context("attaching virtual display")?;
             info!(
                 display_id = vd.display_id(),
                 origin = ?vd.origin_pts(),
                 size = ?vd.size_pts(),
+                hidpi = virtual_display::is_hidpi_virtual_display(vd.display_id()),
                 "virtual display attached — the RDP session uses this surface; \
                  your primary panel is untouched"
             );
