@@ -152,10 +152,6 @@ fn class_required(name: &str) -> Result<&'static AnyClass> {
 pub(super) struct Handle {
     raw: *mut AnyObject,
     display_id: u32,
-    /// Whether the display was registered with `hiDPI=1`. Re-applied on
-    /// every live resize, since `applySettings:` replaces the whole
-    /// settings object (a resize that dropped it would fall back to 1:1).
-    hidpi: bool,
 }
 
 // SAFETY: CGVirtualDisplay is a CF-bridged Obj-C class; CF types are
@@ -174,8 +170,17 @@ impl Handle {
     /// WindowServer relays out windows like a physical monitor changing
     /// resolution). The new mode must fit the descriptor's max dimensions
     /// (8192×8192, set in `create`).
-    pub(super) fn apply_mode(&self, width: u32, height: u32, refresh_hz: u32) -> Result<()> {
-        apply_single_mode(self.raw, width, height, refresh_hz, self.hidpi)
+    /// `hidpi` is re-sent on every call because `applySettings:` replaces the
+    /// whole settings object; it can also switch a live display between a
+    /// scaled and a 1:1 mode.
+    pub(super) fn apply_mode(
+        &self,
+        width: u32,
+        height: u32,
+        refresh_hz: u32,
+        hidpi: bool,
+    ) -> Result<()> {
+        apply_single_mode(self.raw, width, height, refresh_hz, hidpi)
     }
 }
 
@@ -253,12 +258,15 @@ impl Drop for Handle {
 /// `width`/`height` are the mode size: pixels when `hidpi` is false, points
 /// (backed by 2× pixels) when it is true. `size_mm` is the physical panel
 /// size the display reports; with `hidpi` it decides whether macOS actually
-/// selects the scaled mode, so the caller picks it (`hidpi_panel_size_mm`).
+/// selects the scaled mode, so the caller picks it (`panel_size_mm`).
+/// `hidpi_capable` marks a display that may run HiDPI at some point in its
+/// life (it gets its own product id); `hidpi` is the initial mode.
 pub(super) fn create(
     width: u32,
     height: u32,
     refresh_hz: u32,
     name: &str,
+    hidpi_capable: bool,
     hidpi: bool,
     size_mm: (f64, f64),
 ) -> Result<Handle> {
@@ -294,7 +302,17 @@ pub(super) fn create(
         ];
         // A separate product id for HiDPI: macOS remembers a display's chosen
         // mode by vendor/product, and the regular display has always run 1:1.
-        let product: u32 = if hidpi { 0x6D616348 } else { 0x6D616372 }; // "macH" / "macr"
+        // Tests that create a real display ("macT") must not share an identity
+        // with a running macrdp: macOS applies mode settings per vendor/product,
+        // so re-moding one display also re-modes the other (observed: a test's
+        // re-modes dragged the agent's display from 3456×2170 to 800×502).
+        let product: u32 = if cfg!(test) {
+            0x6D616354 // "macT"
+        } else if hidpi_capable {
+            0x6D616348 // "macH"
+        } else {
+            0x6D616372 // "macr"
+        };
         let _: () = msg_send![desc, setProductID: product];
         let _: () = msg_send![desc, setVendorID: 0x6D616372u32];
         // Was hardcoded to 1: a second macrdp process (e.g. two concurrent
@@ -336,7 +354,6 @@ pub(super) fn create(
         Ok(Handle {
             raw: display,
             display_id,
-            hidpi,
         })
     }
 }

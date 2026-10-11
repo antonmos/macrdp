@@ -322,8 +322,14 @@ struct Args {
     /// the size you want the UI to look. Costs ~4× the pixels of the same
     /// apparent size without it (heavier encode, decode and bandwidth).
     /// Only valid with --virtual-display. macOS-only.
-    #[arg(long)]
-    virtual_display_hidpi: bool,
+    /// `auto` keeps the display HiDPI and picks the UI scale per connection
+    /// from the desktop scale factor the client announces: a 2× client
+    /// (Windows App with "Optimize for Retina displays" sends 200) gets the UI
+    /// at half its size, any other client at its own size, captured down from
+    /// the 2× backing — normal-size UI either way. Config: VD_HIDPI=1 or
+    /// VD_HIDPI=auto.
+    #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "on")]
+    virtual_display_hidpi: Option<VdHidpiArg>,
 
     /// Promote the virtual display to be the system's primary display
     /// for the duration of the run — the one with the menu bar, where
@@ -1118,6 +1124,15 @@ struct TlsMaterial {
     cert_der: Vec<u8>,
     /// Private-key DER, same purpose as `cert_der`.
     key_der: Vec<u8>,
+}
+
+/// `--virtual-display-hidpi` values (the bare flag means `on`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum VdHidpiArg {
+    /// Always HiDPI.
+    On,
+    /// HiDPI only for a client that announces a 2× desktop scale factor.
+    Auto,
 }
 
 /// Expiry classification for an operator-supplied cert. Pure (testable) split
@@ -2402,7 +2417,9 @@ fn args_from_config(path: &Path) -> Result<Args> {
         argv.push(get("VD_WIDTH", "1920"));
         argv.push("--height".into());
         argv.push(get("VD_HEIGHT", "1080"));
-        if on("VD_HIDPI", false) {
+        if get("VD_HIDPI", "0").eq_ignore_ascii_case("auto") {
+            argv.push("--virtual-display-hidpi=auto".into());
+        } else if on("VD_HIDPI", false) {
             argv.push("--virtual-display-hidpi".into());
         }
         // Back-compat: old configs set CAPTURE_PRIMARY=1 with no PRIMARY_MODE.
@@ -2703,7 +2720,7 @@ async fn async_main() -> Result<()> {
         tokio::spawn(crate::stats::serve(port, stats));
     }
 
-    if args.virtual_display_hidpi && !args.virtual_display {
+    if args.virtual_display_hidpi.is_some() && !args.virtual_display {
         return Err(anyhow!("--virtual-display-hidpi requires --virtual-display"));
     }
     if args.make_primary && !args.virtual_display {
@@ -2891,6 +2908,14 @@ async fn async_main() -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     let physical_main_id: u32 = 0;
 
+    // The client's desktop scale factor, filled by the server per connection;
+    // only consulted (and only wired to the server) for --virtual-display-hidpi=auto.
+    let client_scale_factor = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let vd_hidpi = match args.virtual_display_hidpi {
+        None => virtual_display::HidpiPolicy::Off,
+        Some(VdHidpiArg::On) => virtual_display::HidpiPolicy::On,
+        Some(VdHidpiArg::Auto) => virtual_display::HidpiPolicy::Auto(client_scale_factor.clone()),
+    };
     let virtual_display: Option<Arc<std::sync::Mutex<virtual_display::VirtualDisplay>>> =
         if args.virtual_display {
             let w = args
@@ -2906,7 +2931,11 @@ async fn async_main() -> Result<()> {
                 u32::from(w),
                 u32::from(h),
                 60,
-                args.virtual_display_hidpi,
+                vd_hidpi.capable(),
+                // Before any client: --width/--height are Retina pixels (the
+                // UI at half that), for `auto` too. Each connection then picks
+                // its own UI scale in `CaptureDisplay::sync_virtual_display`.
+                if vd_hidpi.capable() { 2 } else { 1 },
             )
             .context("attaching virtual display")?;
             info!(
@@ -3357,6 +3386,7 @@ async fn async_main() -> Result<()> {
         // Shared so a live client resize can re-mode the display; None on
         // the mirror-primary path (no virtual display to re-mode).
         virtual_display: virtual_display.clone(),
+        vd_hidpi: vd_hidpi.clone(),
         // Shared so a live re-mode can re-assert the gamma blanking (a re-mode
         // resets gamma → the panel un-blanks). Only for --capture-primary.
         captured_primary: if args.capture_primary {
@@ -3511,6 +3541,9 @@ async fn async_main() -> Result<()> {
     // its Client Core Data; the server publishes it here so the input handler
     // can auto-select a matching non-US layout (when --keyboard-layout is unset).
     server.set_keyboard_layout_handle(keyboard_layout_klid);
+    if matches!(vd_hidpi, virtual_display::HidpiPolicy::Auto(_)) {
+        server.set_desktop_scale_factor_handle(client_scale_factor);
+    }
 
     // The server samples the kernel's smoothed TCP RTT for each accepted
     // connection (divergence 15) into this cell; the H.264 pipeline reads it

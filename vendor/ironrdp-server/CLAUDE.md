@@ -2036,3 +2036,16 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     fires exactly once per connection that is actually served — never for a
     reactivation, never for a losing candidate. Off by default (`None`), so the
     upstream-shaped path is byte-identical unless macrdp installs the handle.
+
+(26) Publish the client's desktop scale factor to a shared cell (NOT upstreamed;
+    added 2026-10-11; pairs with `vendor/ironrdp-acceptor` divergence (5)).
+    `RdpServer` gains `desktop_scale_factor: Option<Arc<AtomicU32>>` (default
+    None) + setter `set_desktop_scale_factor_handle`, the same shape as the
+    keyboard-layout cell (10). `client_accepted` stores
+    `result.desktop_scale_factor` (percent; 0 = not sent) at its top, before
+    `client_loop` calls the display's `updates()` — so the display can size
+    itself for the connecting client. Runs for preemption winners too (they go
+    through `serve_negotiated` → `accept_finalize` → `client_accepted`). macrdp
+    installs it only for `--virtual-display-hidpi=auto`, which re-modes the
+    virtual display HiDPI for a 2× client; otherwise `None` and byte-identical.
+

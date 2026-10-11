@@ -41,6 +41,15 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   The client must request Retina pixels (Windows App:
                           #   "Optimize for Retina displays"); a client asking for
                           #   point-size resolution gets UI twice as big.
+--virtual-display-hidpi=auto # the display stays HiDPI; each connection picks
+                          #   the UI scale from the client's announced desktop
+                          #   scale factor (Client Core Data). A 2x client (scale
+                          #   >= 200; Windows App with "Optimize for Retina
+                          #   displays") gets the UI at half its size, captured
+                          #   1:1; any other client gets the UI at its own size,
+                          #   captured down from the 2x backing. Normal-size UI
+                          #   either way. 1x clients wider than ~2048 px fall back
+                          #   to half-size UI. Config: VD_HIDPI=auto.
 --fps N                   # default 60 with --enable-h264, else 15
 --cursor-scale MULT       # pointer size multiplier (default 1.0 = native macOS
                           #   size, hotspot-exact). Bump (e.g. 1.5/2.0) if your

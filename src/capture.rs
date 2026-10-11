@@ -407,6 +407,10 @@ pub struct CaptureDisplay {
     /// pinned off there, and `updates()` re-modes the display to match
     /// `desktop_size` before each capture stream is built.
     pub virtual_display: Option<Arc<std::sync::Mutex<crate::virtual_display::VirtualDisplay>>>,
+    /// When the virtual display runs HiDPI (`--virtual-display-hidpi`). With
+    /// `Auto`, decided per connection from the client's desktop scale factor
+    /// in `sync_virtual_display`.
+    pub vd_hidpi: crate::virtual_display::HidpiPolicy,
 
     /// The `--capture-primary` blanking guard (shared with main.rs), so a live
     /// re-mode can **re-assert the gamma-black** after it: a display
@@ -641,17 +645,20 @@ impl CaptureDisplay {
             return (width, height);
         };
         let mut vd = vd.lock().expect("virtual display mutex poisoned");
-        // Compare in pixels: on a HiDPI vd the points are half the session size.
-        if vd.mode_px() == (u32::from(width), u32::from(height)) {
+        let ui_scale = self.vd_hidpi.ui_scale();
+        // Compare in pixels: on a HiDPI vd the points are the session size
+        // divided by the UI scale.
+        if vd.mode_px() == (u32::from(width), u32::from(height)) && vd.ui_scale() == ui_scale {
             return (width, height);
         }
-        match vd.resize(u32::from(width), u32::from(height)) {
+        match vd.resize(u32::from(width), u32::from(height), ui_scale) {
             Ok(()) => {
                 self.screen_size_pts = vd.size_pts();
                 let vd_id = vd.display_id();
                 tracing::info!(
                     width,
                     height,
+                    ui_scale,
                     display_id = vd_id,
                     "virtual display re-moded to the client-requested session size"
                 );
@@ -787,17 +794,22 @@ impl CaptureDisplay {
                 (width, height)
             }
             Err(e) => {
-                let (cur_w, cur_h) = vd.mode_px();
-                let (w, h) = (cur_w as u16, cur_h as u16);
+                // Keep serving the size the client negotiated: by the time this
+                // runs the client has already accepted it in Demand Active, so
+                // switching to the display's old size would build the video
+                // surface at a size the client isn't showing (a client at
+                // 1728×1084 then sees the top-left quarter of a 3456×2170
+                // surface). Capture scales from whatever mode the display is
+                // in, and the next `updates()` retries the re-mode, since
+                // `mode_px` still records the old size.
                 tracing::warn!(
                     error = ?e,
                     requested_w = width,
                     requested_h = height,
-                    "virtual display live resize failed — keeping the current \
-                     display mode and serving its size"
+                    "virtual display live resize failed — serving the requested size, \
+                     scaled from the display's current mode"
                 );
-                self.desktop_size.set(w, h);
-                (w, h)
+                (width, height)
             }
         }
     }
