@@ -88,6 +88,13 @@ Edit feature toggles (H.264, AAC, HiDPI, un-minimize-on-Cmd+Tab), the headless v
 an `EXTRA_FLAGS` escape hatch in `config.env`. It's outside the bundle, so edits
 never disturb the code signature or the TCC grants.
 
+> **`EXTRA_FLAGS` overrides the dedicated keys.** Its tokens are appended to argv
+> *after* every dedicated key, so a flag there wins over its own key with no warning.
+> For example, `ALT_TAB_SWITCH=0` plus `EXTRA_FLAGS="--alt-tab-switch"` leaves Alt+Tab
+> **on**. Unrecognised keys are silently ignored (for forward compatibility), so a typo
+> or an older installed binary also fails quietly. If a setting seems to have no
+> effect, check `EXTRA_FLAGS` first.
+
 ## Smart-card redirection (optional)
 
 Lets the connecting client's smart-card reader be used by macOS apps. The

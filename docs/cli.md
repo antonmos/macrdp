@@ -596,3 +596,28 @@ and point Wireshark at that file (Preferences → Protocols → TLS → "(Pre)-M
 filename"). Covers the TCP RDP connection and the reliable-UDP multitransport flow (rustls);
 the lossy flow's DTLS is not covered. macrdp warns loudly at startup while the var is set —
 session keys on disk break the capture's confidentiality, so use it only for protocol debugging.
+
+Deploying a change to the installed bundle (the LaunchAgent runs
+`/Applications/macrdp.app`, never `target/release`):
+```bash
+# Don't reinstall over a live session; a restart drops it.
+# An `accept` with no later `disconnect` means a client is connected.
+grep -E 'event="(accept|disconnect)"' ~/Library/Logs/macrdp.log | tail -5
+
+# Rebuild + install in one step. With the macrdp-dev cert, TCC grants survive.
+packaging/make-app.sh
+
+# Confirm the INSTALLED binary contains the change (pick a log string the change adds).
+strings /Applications/macrdp.app/Contents/MacOS/macrdp | grep -c '<new log string>'
+
+launchctl kickstart -k gui/$(id -u)/com.clintcan.macrdp
+tail -f ~/Library/Logs/macrdp.log   # watch the new behaviour actually fire
+```
+To compare the installed binary with a build, use the staged signed copy at
+`target/macrdp.app/Contents/MacOS/macrdp`. The installed binary is signed and
+`target/release/macrdp` isn't, so their hashes never match.
+
+To see what a `config.env` actually resolves to, add a throwaway `#[cfg(test)]` test
+that calls `args_from_config(&path)` and prints the fields. One `cargo test` run
+settles it, which is faster than reading logs. `EXTRA_FLAGS` is appended after every
+dedicated key and wins over them (see packaging/README.md).
