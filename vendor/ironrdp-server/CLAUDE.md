@@ -2059,5 +2059,7 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     set where alpha is 0, scan lines padded to 2 bytes, same row order as the
     XOR data. mstsc and FreeRDP accepted the empty mask, which is why this went
     unnoticed. Upstream has the same empty mask (`ironrdp-server`
-    `rgba_pointer`/`large_pointer`), so this is an upstream candidate once it's
-    verified live.
+    `rgba_pointer`/`large_pointer`). Live-verified 2026-10-11 (every shape now
+    draws on Windows App for macOS) and filed upstream as Devolutions/IronRDP#2108,
+    which also covers `large_pointer`. Drop this divergence at the pin bump past
+    its merge.
