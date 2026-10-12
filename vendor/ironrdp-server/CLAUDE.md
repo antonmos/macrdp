@@ -2048,6 +2048,12 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     through `serve_negotiated` → `accept_finalize` → `client_accepted`). macrdp
     installs it only for `--virtual-display-hidpi=auto`, which re-modes the
     virtual display HiDPI for a 2× client; otherwise `None` and byte-identical.
+    Stored on the INITIAL accept only, not on a reactivation (2026-10-12): the
+    acceptor carries the connect-time value across reactivations, and macrdp
+    updates the cell mid-session from the monitor layout's per-monitor scale
+    (Windows App sends one when its window moves between a Retina panel and a
+    1× monitor). Re-storing it on the reactivation that resize triggers put the
+    connect-time 200 back right before the re-mode, so a 1× monitor got a 2× UI.
 
 
 (27) 32-bpp pointers carry an AND mask (NOT upstreamed; added 2026-10-11).

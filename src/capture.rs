@@ -586,6 +586,11 @@ impl RdpServerDisplay for CaptureDisplay {
             return;
         };
 
+        // Moving the client window between displays of different scale (a
+        // Retina panel and a 1x monitor) can change the scale with or without
+        // the size, so this re-modes even when the size is unchanged.
+        let scale_changed = self.vd_hidpi.observe_client_scale(monitor.desktop_scale_factor());
+
         let (w, h) = monitor.dimensions();
         let (Ok(mut width), Ok(mut height)) = (u16::try_from(w), u16::try_from(h)) else {
             tracing::warn!(
@@ -605,7 +610,16 @@ impl RdpServerDisplay for CaptureDisplay {
         let Some(adopted) =
             adopt_client_size(resizable, (cur_w, cur_h), DesktopSize { width, height })
         else {
-            return; // no-op: unchanged, or outside the protocol-legal band
+            // Size unchanged (or outside the protocol-legal band): only a
+            // scale change still needs a re-mode, at the current size.
+            if scale_changed {
+                tracing::info!(
+                    ui_scale = self.vd_hidpi.ui_scale(),
+                    "client display scale changed — re-moding at the same size (debounced)"
+                );
+                self.pending_resize.request(cur_w, cur_h);
+            }
+            return;
         };
 
         tracing::info!(
@@ -613,6 +627,8 @@ impl RdpServerDisplay for CaptureDisplay {
             client_h = adopted.height,
             prev_w = cur_w,
             prev_h = cur_h,
+            desktop_scale_factor = ?monitor.desktop_scale_factor(),
+            ui_scale = self.vd_hidpi.ui_scale(),
             "client resized its window — resizing the session (debounced)"
         );
         self.pending_resize.request(adopted.width, adopted.height);

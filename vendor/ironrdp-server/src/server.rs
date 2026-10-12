@@ -3453,7 +3453,11 @@ impl RdpServer {
             debug!(klid = result.keyboard_layout, "client keyboard layout announced");
         }
         // (vendored, divergence 26) Publish the client's desktop scale factor.
-        if let Some(handle) = &self.desktop_scale_factor {
+        // Initial accept only: a reactivation carries the connect-time value
+        // over, and storing it again would undo a newer scale the client
+        // announced mid-session in a monitor layout (the embedder updates the
+        // cell from those).
+        if let (false, Some(handle)) = (result.reactivation, &self.desktop_scale_factor) {
             handle.store(result.desktop_scale_factor, Ordering::Relaxed);
             debug!(scale = result.desktop_scale_factor, "client desktop scale factor announced");
         }

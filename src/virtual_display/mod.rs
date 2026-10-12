@@ -60,6 +60,20 @@ impl HidpiPolicy {
             }
         }
     }
+
+    /// Record a scale factor the client announced mid-session, in a monitor
+    /// layout (MS-RDPEDISP), and say whether it changes the UI scale. Windows
+    /// App sends one when its window moves to a display with a different
+    /// scale, e.g. from a Retina panel to a 1x external monitor. Only `Auto`
+    /// follows it; `None` (the field absent or out of range) changes nothing.
+    pub fn observe_client_scale(&self, desktop_scale_factor: Option<u32>) -> bool {
+        let (Self::Auto(cell), Some(factor)) = (self, desktop_scale_factor) else {
+            return false;
+        };
+        let before = self.ui_scale();
+        cell.store(factor, std::sync::atomic::Ordering::Relaxed);
+        self.ui_scale() != before
+    }
 }
 
 /// Whether a client's desktop scale factor (percent) asks for a 2× display.
@@ -1969,6 +1983,25 @@ mod tests {
         assert!(!HidpiPolicy::Off.capable());
         assert_eq!(HidpiPolicy::Off.ui_scale(), 1);
         assert!(HidpiPolicy::On.capable());
+        assert_eq!(HidpiPolicy::On.ui_scale(), 2);
+    }
+
+    #[test]
+    fn a_mid_session_scale_change_switches_the_ui_scale() {
+        use std::sync::{atomic::AtomicU32, Arc};
+        let policy = HidpiPolicy::Auto(Arc::new(AtomicU32::new(200)));
+        // Window moved from the Retina panel to a 1x monitor.
+        assert!(policy.observe_client_scale(Some(100)));
+        assert_eq!(policy.ui_scale(), 1);
+        // Same scale again, or no scale in the layout: nothing to re-mode.
+        assert!(!policy.observe_client_scale(Some(100)));
+        assert!(!policy.observe_client_scale(None));
+        assert_eq!(policy.ui_scale(), 1);
+        // And back to the Retina panel.
+        assert!(policy.observe_client_scale(Some(200)));
+        assert_eq!(policy.ui_scale(), 2);
+        // A fixed policy ignores the client.
+        assert!(!HidpiPolicy::On.observe_client_scale(Some(100)));
         assert_eq!(HidpiPolicy::On.ui_scale(), 2);
     }
 
