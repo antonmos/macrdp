@@ -411,6 +411,10 @@ pub struct CaptureDisplay {
     /// `Auto`, decided per connection from the client's desktop scale factor
     /// in `sync_virtual_display`.
     pub vd_hidpi: crate::virtual_display::HidpiPolicy,
+    /// The UI scale of the current connection as the client announced it at
+    /// connect, which is the scale it draws pointer images at for the whole
+    /// connection (see `pointer_scale`). Set in `request_initial_size`.
+    pub connect_ui_scale: u32,
 
     /// The `--capture-primary` blanking guard (shared with main.rs), so a live
     /// re-mode can **re-assert the gamma-black** after it: a display
@@ -528,6 +532,10 @@ impl RdpServerDisplay for CaptureDisplay {
             return DesktopSize { width, height };
         }
 
+        // A new connection (reactivations we trigger returned above). The
+        // server has just published the scale this client announced.
+        self.connect_ui_scale = self.vd_hidpi.ui_scale();
+
         if let Some(adopted) = adopt_client_size(self.auto_size, (width, height), client_size) {
             tracing::info!(
                 client_w = adopted.width,
@@ -644,6 +652,29 @@ impl RdpServerDisplay for CaptureDisplay {
 }
 
 impl CaptureDisplay {
+    /// How much to enlarge the pointer on the HiDPI virtual display, whose
+    /// cursor SkyLight returns as the 1× image (measured: a 28×40 arrow whose
+    /// NSCursor has 28×40 points, at both UI scales).
+    ///
+    /// With `Auto` this is the scale the client announced at connect, not the
+    /// current one. Windows App draws pointer images at that scale for the
+    /// whole connection: after a Retina connect it halves every pointer, so
+    /// once its window moves to a 1× monitor (UI scale 1) a 1× pointer came
+    /// out half-size. Sized for the connect-time scale, the pointer is right
+    /// on both displays. `On` keeps the session's pixels per point.
+    fn pointer_scale(&self, width: u16) -> f64 {
+        let hidpi = self
+            .display_id
+            .is_some_and(crate::virtual_display::is_hidpi_virtual_display);
+        if !hidpi {
+            return 1.0;
+        }
+        match self.vd_hidpi {
+            crate::virtual_display::HidpiPolicy::Auto(_) => f64::from(self.connect_ui_scale),
+            _ => f64::from(width) / self.screen_size_pts.0.max(1.0),
+        }
+    }
+
     /// Keep the virtual display's mode in sync with the session size,
     /// returning the (possibly corrected) size to serve.
     /// [`RdpServerDisplay::updates`] runs at connect AND after every
@@ -845,7 +876,7 @@ impl CaptureDisplay {
                 self.fps,
                 self.display_id,
                 self.screen_size_pts,
-                self.cursor_scale,
+                self.cursor_scale * self.pointer_scale(width),
                 self.warp_cursor_home,
                 self.gfx.clone(),
                 self.keyframe_on_change,
@@ -1283,17 +1314,9 @@ mod macos {
             // native pixels while upscaling the desktop image to their window,
             // which can make a native-size pointer look small. Clamped to a
             // sane band; the hotspot stays accurate at any value.
-            let mut cursor_scale = cursor_scale_multiplier.clamp(0.1, 8.0);
-            // Exception: on the HiDPI virtual display SkyLight returns the 1×
-            // cursor (measured: a 23×22 bitmap whose NSCursor has 23×22 points,
-            // on a 2× display with the lid closed), so a client served 2 px per
-            // point would get a pointer half the size of everything else.
-            // Scale it by the session's pixels per point: 2 for a Retina
-            // client, 1 for a 1× client served the same display.
-            if crate::virtual_display::is_hidpi_virtual_display(display.display_id()) {
-                cursor_scale *= f64::from(width) / f64::from(native_w.max(1));
-                cursor_scale = cursor_scale.clamp(0.1, 8.0);
-            }
+            // On the HiDPI virtual display the multiplier already includes
+            // the pointer enlargement (`CaptureDisplay::pointer_scale`).
+            let cursor_scale = cursor_scale_multiplier.clamp(0.1, 8.0);
             tracing::debug!(
                 native_w,
                 native_h,
