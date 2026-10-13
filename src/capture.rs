@@ -411,10 +411,10 @@ pub struct CaptureDisplay {
     /// `Auto`, decided per connection from the client's desktop scale factor
     /// in `sync_virtual_display`.
     pub vd_hidpi: crate::virtual_display::HidpiPolicy,
-    /// The UI scale of the current connection as the client announced it at
-    /// connect, which is the scale it draws pointer images at for the whole
-    /// connection (see `pointer_scale`). Set in `request_initial_size`.
-    pub connect_ui_scale: u32,
+    /// The session's UI scale for the pointer (see `pointer_scale`): set at
+    /// connect and from each monitor layout, and read live by the capture
+    /// loop so a scale change resends the pointer.
+    pub pointer_ui_scale: Arc<std::sync::atomic::AtomicU32>,
 
     /// The `--capture-primary` blanking guard (shared with main.rs), so a live
     /// re-mode can **re-assert the gamma-black** after it: a display
@@ -534,7 +534,8 @@ impl RdpServerDisplay for CaptureDisplay {
 
         // A new connection (reactivations we trigger returned above). The
         // server has just published the scale this client announced.
-        self.connect_ui_scale = self.vd_hidpi.ui_scale();
+        self.pointer_ui_scale
+            .store(self.vd_hidpi.ui_scale(), Ordering::Relaxed);
 
         if let Some(adopted) = adopt_client_size(self.auto_size, (width, height), client_size) {
             tracing::info!(
@@ -598,6 +599,10 @@ impl RdpServerDisplay for CaptureDisplay {
         // Retina panel and a 1x monitor) can change the scale with or without
         // the size, so this re-modes even when the size is unchanged.
         let scale_changed = self.vd_hidpi.observe_client_scale(monitor.desktop_scale_factor());
+        let layout_ui_scale = self.vd_hidpi.ui_scale();
+        // Read live by the capture loop, so a change resends the pointer even
+        // when this layout doesn't re-mode the display.
+        self.pointer_ui_scale.store(layout_ui_scale, Ordering::Relaxed);
 
         let (w, h) = monitor.dimensions();
         let (Ok(mut width), Ok(mut height)) = (u16::try_from(w), u16::try_from(h)) else {
@@ -656,12 +661,23 @@ impl CaptureDisplay {
     /// cursor SkyLight returns as the 1× image (measured: a 28×40 arrow whose
     /// NSCursor has 28×40 points, at both UI scales).
     ///
-    /// With `Auto` this is the scale the client announced at connect, not the
-    /// current one. Windows App draws pointer images at that scale for the
-    /// whole connection: after a Retina connect it halves every pointer, so
-    /// once its window moves to a 1× monitor (UI scale 1) a 1× pointer came
-    /// out half-size. Sized for the connect-time scale, the pointer is right
-    /// on both displays. `On` keeps the session's pixels per point.
+    /// The factor is the session's pixels per point: with "Optimize for
+    /// Retina displays" on, Windows App draws session pixels (pointer
+    /// included) 1:1, so a 2x session needs a 2x pointer and a 1x session a
+    /// 1x one. With `Auto` it comes from `pointer_ui_scale`, which follows
+    /// the client's monitor layouts; `On` uses the session width over points.
+    /// The pointer-scale cell for the capture loop to follow, with the
+    /// `--cursor-scale` multiplier it applies on top. `Some` only for `Auto`
+    /// on the HiDPI virtual display, where the pointer scale changes
+    /// mid-capture.
+    fn live_pointer_scale(&self) -> Option<(Arc<std::sync::atomic::AtomicU32>, f64)> {
+        let hidpi = self
+            .display_id
+            .is_some_and(crate::virtual_display::is_hidpi_virtual_display);
+        (hidpi && matches!(self.vd_hidpi, crate::virtual_display::HidpiPolicy::Auto(_)))
+            .then(|| (self.pointer_ui_scale.clone(), self.cursor_scale))
+    }
+
     fn pointer_scale(&self, width: u16) -> f64 {
         let hidpi = self
             .display_id
@@ -670,7 +686,9 @@ impl CaptureDisplay {
             return 1.0;
         }
         match self.vd_hidpi {
-            crate::virtual_display::HidpiPolicy::Auto(_) => f64::from(self.connect_ui_scale),
+            crate::virtual_display::HidpiPolicy::Auto(_) => {
+                f64::from(self.pointer_ui_scale.load(Ordering::Relaxed))
+            }
             _ => f64::from(width) / self.screen_size_pts.0.max(1.0),
         }
     }
@@ -888,6 +906,7 @@ impl CaptureDisplay {
                 self.desktop_size.clone(),
                 self.pending_resize.clone(),
                 self.suppress_next_adopt.clone(),
+                self.live_pointer_scale(),
             )
             .await?,
         );
@@ -1110,6 +1129,10 @@ mod macos {
         /// reactivation's `request_initial_size` call doesn't re-adopt
         /// whatever size the client's Confirm Active echoes.
         suppress_next_adopt: Arc<AtomicBool>,
+        /// See `CaptureDisplay::live_pointer_scale`, plus the scale last
+        /// applied to `cursor`.
+        live_pointer_scale: Option<(Arc<std::sync::atomic::AtomicU32>, f64)>,
+        applied_pointer_scale: u32,
     }
 
     impl ScreenCaptureUpdates {
@@ -1179,6 +1202,7 @@ mod macos {
             desktop_size: SharedDesktopSize,
             pending_resize: PendingResize,
             suppress_next_adopt: Arc<AtomicBool>,
+            live_pointer_scale: Option<(Arc<std::sync::atomic::AtomicU32>, f64)>,
         ) -> Result<Self> {
             let content = AsyncSCShareableContent::get()
                 .await
@@ -1367,6 +1391,10 @@ mod macos {
                 pending_resize,
                 desktop_size,
                 suppress_next_adopt,
+                applied_pointer_scale: live_pointer_scale
+                    .as_ref()
+                    .map_or(0, |(cell, _)| cell.load(Ordering::Relaxed)),
+                live_pointer_scale,
             })
         }
     }
@@ -1527,6 +1555,14 @@ mod macos {
                     .is_none_or(|t| t.elapsed() >= CURSOR_POLL_INTERVAL);
                 if poll_due {
                     self.last_cursor_poll = Some(Instant::now());
+                    if let Some((cell, multiplier)) = self.live_pointer_scale.as_ref() {
+                        let scale = cell.load(Ordering::Relaxed);
+                        if scale != self.applied_pointer_scale {
+                            self.applied_pointer_scale = scale;
+                            self.cursor.set_scale(multiplier.clamp(0.1, 8.0) * f64::from(scale));
+                            tracing::info!(pointer_ui_scale = scale, "resending the pointer at a new scale");
+                        }
+                    }
                     let mut cursor_updates = self.cursor.poll();
                     if !cursor_updates.is_empty() {
                         let first = cursor_updates.remove(0);

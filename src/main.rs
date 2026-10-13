@@ -3387,7 +3387,7 @@ async fn async_main() -> Result<()> {
         // the mirror-primary path (no virtual display to re-mode).
         virtual_display: virtual_display.clone(),
         vd_hidpi: vd_hidpi.clone(),
-        connect_ui_scale: vd_hidpi.ui_scale(),
+        pointer_ui_scale: Arc::new(std::sync::atomic::AtomicU32::new(vd_hidpi.ui_scale())),
         // Shared so a live re-mode can re-assert the gamma blanking (a re-mode
         // resets gamma → the panel un-blanks). Only for --capture-primary.
         captured_primary: if args.capture_primary {
