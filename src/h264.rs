@@ -2538,7 +2538,11 @@ impl Gfx {
     /// connection.
     /// Whether this connection's H.264 pipeline is up.
     pub(crate) fn pipeline_ready(&self) -> bool {
-        self.ctx.lock().unwrap().as_ref().is_some_and(|ctx| ctx.is_ready)
+        self.ctx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|ctx| ctx.is_ready)
     }
 
     /// Whether a client is connected whose graphics pipeline is still being
@@ -4924,13 +4928,24 @@ mod tests {
         assert!(gfx.pipeline_pending());
         assert!(!gfx.pipeline_ready());
 
-        gfx.ctx.lock().unwrap().as_mut().unwrap().client_supports_avc = true;
-        GfxHandler { ctx: gfx.ctx.clone() }.on_ready(&avc_ready());
+        gfx.ctx
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .client_supports_avc = true;
+        GfxHandler {
+            ctx: gfx.ctx.clone(),
+        }
+        .on_ready(&avc_ready());
         assert!(gfx.pipeline_ready());
         assert!(!gfx.pipeline_pending());
 
         let declined = gfx_with_context();
-        GfxHandler { ctx: declined.ctx.clone() }.on_ready(&avc_ready()); // no AVC
+        GfxHandler {
+            ctx: declined.ctx.clone(),
+        }
+        .on_ready(&avc_ready()); // no AVC
         assert!(!declined.pipeline_ready());
         assert!(!declined.pipeline_pending());
 

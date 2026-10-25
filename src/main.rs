@@ -2731,7 +2731,9 @@ async fn async_main() -> Result<()> {
     }
 
     if args.virtual_display_hidpi.is_some() && !args.virtual_display {
-        return Err(anyhow!("--virtual-display-hidpi requires --virtual-display"));
+        return Err(anyhow!(
+            "--virtual-display-hidpi requires --virtual-display"
+        ));
     }
     if args.make_primary && !args.virtual_display {
         return Err(anyhow!(

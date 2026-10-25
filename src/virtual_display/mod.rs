@@ -152,8 +152,7 @@ mod macos {
     /// Whether `display_id` is macrdp's virtual display running HiDPI (2×
     /// pixels per point) via `--virtual-display-hidpi`.
     pub fn is_hidpi_virtual_display(display_id: u32) -> bool {
-        display_id != 0
-            && HIDPI_DISPLAY_ID.load(std::sync::atomic::Ordering::Relaxed) == display_id
+        display_id != 0 && HIDPI_DISPLAY_ID.load(std::sync::atomic::Ordering::Relaxed) == display_id
     }
 
     /// Read-and-clear the "detach left the physical panel stuck-disabled" flag
@@ -2047,7 +2046,11 @@ mod tests {
         let ppi = |px: u32| f64::from(px) / (w_mm / 25.4);
         // The band macOS selected the scaled mode in, measured on 26.6.
         for px in [1440, 2560, 2880, 3024, 3456, 3840] {
-            assert!((155.0..=460.0).contains(&ppi(px)), "{px} px -> {} PPI", ppi(px));
+            assert!(
+                (155.0..=460.0).contains(&ppi(px)),
+                "{px} px -> {} PPI",
+                ppi(px)
+            );
         }
         // Fixed width (it can't change after creation), aspect follows.
         assert_eq!(panel_size_mm(1920, 1080, true).0, w_mm);

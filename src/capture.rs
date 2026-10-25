@@ -598,11 +598,14 @@ impl RdpServerDisplay for CaptureDisplay {
         // Moving the client window between displays of different scale (a
         // Retina panel and a 1x monitor) can change the scale with or without
         // the size, so this re-modes even when the size is unchanged.
-        let scale_changed = self.vd_hidpi.observe_client_scale(monitor.desktop_scale_factor());
+        let scale_changed = self
+            .vd_hidpi
+            .observe_client_scale(monitor.desktop_scale_factor());
         let layout_ui_scale = self.vd_hidpi.ui_scale();
         // Read live by the capture loop, so a change resends the pointer even
         // when this layout doesn't re-mode the display.
-        self.pointer_ui_scale.store(layout_ui_scale, Ordering::Relaxed);
+        self.pointer_ui_scale
+            .store(layout_ui_scale, Ordering::Relaxed);
 
         let (w, h) = monitor.dimensions();
         let (Ok(mut width), Ok(mut height)) = (u16::try_from(w), u16::try_from(h)) else {
@@ -1259,24 +1262,23 @@ mod macos {
             // framebuffer. Only a size matching neither (explicit
             // --width/--height that asks SCK to scale) forces full frames,
             // because then dirty-rects arrive in source coords and misalign.
-            let (backing_w, backing_h) = if crate::virtual_display::is_hidpi_virtual_display(
-                display.display_id(),
-            ) {
-                // `CGDisplayCopyDisplayMode` returns nothing for a virtual
-                // display, so the HiDPI vd's 2× backing is derived here.
-                (native_w.saturating_mul(2), native_h.saturating_mul(2))
-            } else {
-                use core_graphics::display::CGDisplay;
-                CGDisplay::new(display.display_id())
-                    .display_mode()
-                    .and_then(|m| {
-                        Some((
-                            u16::try_from(m.pixel_width()).ok()?,
-                            u16::try_from(m.pixel_height()).ok()?,
-                        ))
-                    })
-                    .unwrap_or((native_w, native_h))
-            };
+            let (backing_w, backing_h) =
+                if crate::virtual_display::is_hidpi_virtual_display(display.display_id()) {
+                    // `CGDisplayCopyDisplayMode` returns nothing for a virtual
+                    // display, so the HiDPI vd's 2× backing is derived here.
+                    (native_w.saturating_mul(2), native_h.saturating_mul(2))
+                } else {
+                    use core_graphics::display::CGDisplay;
+                    CGDisplay::new(display.display_id())
+                        .display_mode()
+                        .and_then(|m| {
+                            Some((
+                                u16::try_from(m.pixel_width()).ok()?,
+                                u16::try_from(m.pixel_height()).ok()?,
+                            ))
+                        })
+                        .unwrap_or((native_w, native_h))
+                };
             // See `capture_scaling_mode`: full frames when SCK scales (configured
             // size matches neither native points nor backing pixels), and
             // letterbox vs stretch on the auto-size path.
@@ -1576,8 +1578,12 @@ mod macos {
                         let scale = cell.load(Ordering::Relaxed);
                         if scale != self.applied_pointer_scale {
                             self.applied_pointer_scale = scale;
-                            self.cursor.set_scale(multiplier.clamp(0.1, 8.0) * f64::from(scale));
-                            tracing::info!(pointer_ui_scale = scale, "resending the pointer at a new scale");
+                            self.cursor
+                                .set_scale(multiplier.clamp(0.1, 8.0) * f64::from(scale));
+                            tracing::info!(
+                                pointer_ui_scale = scale,
+                                "resending the pointer at a new scale"
+                            );
                         }
                     }
                     let mut cursor_updates = self.cursor.poll();
