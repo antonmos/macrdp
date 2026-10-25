@@ -985,10 +985,15 @@ mod macos {
 
     use anyhow::{anyhow, Context};
     use screencapturekit::async_api::{AsyncSCShareableContent, AsyncSCStream};
-    use screencapturekit::cv::CVPixelBufferLockFlags;
+    use screencapturekit::cv::{CVPixelBuffer, CVPixelBufferLockFlags};
     use screencapturekit::prelude::{
         PixelFormat as SckPixelFormat, SCContentFilter, SCStreamConfiguration, SCStreamOutputType,
     };
+
+    /// SCK's surface-pool depth: its default (3) plus one for the frame the
+    /// flush burst keeps retained (`ScreenCaptureUpdates::last_frame`), so
+    /// holding it doesn't shrink the headroom SCK had before.
+    const SCK_QUEUE_DEPTH: u32 = 4;
 
     /// How long the shared SuppressOutput flag must remain `true` before
     /// the gate engages. A real minimize lasts seconds-to-minutes and
@@ -1056,17 +1061,21 @@ mod macos {
         /// `flush_frames` times to push it through within a couple of frame
         /// intervals. Stays 0 (no-op) on the legacy bitmap path.
         flush_remaining: u32,
-        /// Last BGRA frame submitted to EGFX, reused across frames (no per-frame
-        /// realloc) and re-encoded as cheap skip-P-frames during a flush burst.
-        last_frame: Vec<u8>,
-        last_stride: usize,
+        /// Last frame submitted to EGFX, re-encoded as cheap skip-P-frames
+        /// during a flush burst. Held as a retained SCK pixel buffer rather
+        /// than a byte copy: copying the whole frame after every submit was
+        /// ~20% of macrdp's CPU at a large virtual display, and the flush
+        /// path only reads it on the few idle-edge ticks. Holding it pins one
+        /// surface of SCK's pool, which is why the stream's queue depth is
+        /// one above SCK's default (see `SCK_QUEUE_DEPTH`).
+        last_frame: Option<CVPixelBuffer>,
         /// A frame captured while the EGFX pipeline was still being negotiated
         /// is waiting in `last_frame` to be re-sent over H.264 once it comes up
         /// (see `promote_frame_to_egfx`).
         egfx_pending_frame: bool,
         /// When this capture started; bounds how long a frame is held for
         /// `egfx_pending_frame` (a client that never opens the graphics
-        /// channel would otherwise have every legacy frame copied).
+        /// channel would otherwise have every legacy frame retained).
         started_at: Instant,
         /// Shared "client minimized" flag — see [`super::CaptureDisplay::display_suppressed`].
         /// `None` disables the gate.
@@ -1162,7 +1171,15 @@ mod macos {
             let queued = self.pending.len();
             self.pending
                 .retain(|update| !matches!(update, DisplayUpdate::Bitmap(_)));
-            match gfx.submit_bgra(&self.last_frame, self.last_stride, true) {
+            let Some(pb) = self.last_frame.as_ref() else {
+                self.egfx_pending_frame = false;
+                return;
+            };
+            let submitted = pb
+                .lock(CVPixelBufferLockFlags::READ_ONLY)
+                .map_err(|e| anyhow!("CVPixelBuffer::lock OSStatus {e}"))
+                .and_then(|g| gfx.submit_bgra(g.as_slice(), g.bytes_per_row(), true));
+            match submitted {
                 Ok(true) => {
                     self.egfx_pending_frame = false;
                     self.seeded = true;
@@ -1317,7 +1334,8 @@ mod macos {
                 // source scales to the output either way; `preserves_aspect_ratio`
                 // is the knob that picks letterbox vs stretch.
                 .with_scales_to_fit(true)
-                .with_preserves_aspect_ratio(letterbox);
+                .with_preserves_aspect_ratio(letterbox)
+                .with_queue_depth(SCK_QUEUE_DEPTH);
 
             let stream = AsyncSCStream::new(&filter, &config, 4, SCStreamOutputType::Screen);
             stream
@@ -1379,8 +1397,7 @@ mod macos {
                 frame_interval,
                 flush_frames,
                 flush_remaining: 0,
-                last_frame: Vec::new(),
-                last_stride: 0,
+                last_frame: None,
                 egfx_pending_frame: false,
                 started_at: Instant::now(),
                 display_suppressed,
@@ -1644,12 +1661,20 @@ mod macos {
                             if self.flush_remaining > 0 {
                                 self.flush_remaining -= 1;
                                 if let Some(gfx) = self.gfx.as_ref() {
-                                    if !self.last_frame.is_empty() {
-                                        if let Err(e) = gfx.submit_bgra(
-                                            &self.last_frame,
-                                            self.last_stride,
-                                            false,
-                                        ) {
+                                    if let Some(pb) = self.last_frame.as_ref() {
+                                        let res = pb
+                                            .lock(CVPixelBufferLockFlags::READ_ONLY)
+                                            .map_err(|e| {
+                                                anyhow!("CVPixelBuffer::lock OSStatus {e}")
+                                            })
+                                            .and_then(|g| {
+                                                gfx.submit_bgra(
+                                                    g.as_slice(),
+                                                    g.bytes_per_row(),
+                                                    false,
+                                                )
+                                            });
+                                        if let Err(e) = res {
                                             tracing::warn!(error = ?e, "EGFX flush submit_bgra failed");
                                         }
                                     }
@@ -1800,24 +1825,19 @@ mod macos {
                             // Stash this frame and arm the flush burst so that,
                             // once SCK goes idle after this change, we re-submit
                             // it enough times to drain mstsc's presentation
-                            // buffer. Reuse the buffer to avoid a per-frame
-                            // realloc; clear keeps the capacity.
-                            self.last_frame.clear();
-                            self.last_frame.extend_from_slice(src);
-                            self.last_stride = stride_bytes;
+                            // buffer. A retain, not a copy (see `last_frame`).
+                            self.last_frame = Some(pixel_buffer.clone());
                             self.flush_remaining = self.flush_frames;
                             continue;
                         }
                         Ok(false) => {
                             // Not ready yet: this frame goes out as legacy
-                            // bitmaps, but keep a copy to re-send over H.264
+                            // bitmaps, but retain it to re-send over H.264
                             // once the pipeline comes up.
                             if gfx.pipeline_pending()
                                 && self.started_at.elapsed() < EGFX_PENDING_FRAME_WINDOW
                             {
-                                self.last_frame.clear();
-                                self.last_frame.extend_from_slice(src);
-                                self.last_stride = stride_bytes;
+                                self.last_frame = Some(pixel_buffer.clone());
                                 self.egfx_pending_frame = true;
                             }
                         }

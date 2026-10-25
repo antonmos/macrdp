@@ -62,6 +62,10 @@ packaging side, see [../packaging/README.md](../packaging/README.md).
                           --alt-tab-switch, for clients that forward Alt+` but
                           gate Win-key combos. Option+Shift+` cycles backward.
                           macOS-only.
+--alt-space-spotlight     Also accept Option+Space (Alt+Space from the client)
+                          as the Spotlight trigger, in addition to Cmd+Space.
+                          Off by default. For macOS clients, whose own Spotlight
+                          takes Cmd+Space first. macOS-only.
 --app-switcher-hud        Show a visual app-switcher overlay (icon row, like
                           macOS's native Cmd+Tab) on the remote during Cmd+Tab /
                           Option+Tab. Off by default. macrdp spawns a small helper
