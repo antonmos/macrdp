@@ -620,4 +620,5 @@ To compare the installed binary with a build, use the staged signed copy at
 To see what a `config.env` actually resolves to, add a throwaway `#[cfg(test)]` test
 that calls `args_from_config(&path)` and prints the fields. One `cargo test` run
 settles it, which is faster than reading logs. `EXTRA_FLAGS` is appended after every
-dedicated key and wins over them (see packaging/README.md).
+dedicated key: an on/off flag there silently overrides its key, a duplicated valued flag
+stops startup, and `BITRATE` always wins (see packaging/README.md).
