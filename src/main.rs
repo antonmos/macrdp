@@ -769,6 +769,13 @@ struct Args {
     #[arg(long = "alt-backtick-switch")]
     alt_backtick_switch: bool,
 
+    /// Also accept Option+Space (Alt+Space from the client) as the Spotlight
+    /// trigger, in addition to Cmd+Space. Off by default. For macOS clients,
+    /// whose own Spotlight takes Cmd+Space before the RDP client sees it. When
+    /// off, Option+Space types a non-breaking space. macOS-only.
+    #[arg(long = "alt-space-spotlight")]
+    alt_space_spotlight: bool,
+
     /// Show a visual app-switcher overlay (icon row) on the remote during Cmd+Tab
     /// / Option+Tab, like macOS's native switcher. Off by default. macrdp spawns a
     /// small helper process that draws a real on-screen panel; ScreenCaptureKit
@@ -2328,6 +2335,9 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("ALT_BACKTICK_SWITCH", false) {
         argv.push("--alt-backtick-switch".into());
     }
+    if on("ALT_SPACE_SPOTLIGHT", false) {
+        argv.push("--alt-space-spotlight".into());
+    }
     if on("APP_SWITCHER_HUD", false) {
         argv.push("--app-switcher-hud".into());
     }
@@ -3196,6 +3206,7 @@ async fn async_main() -> Result<()> {
     crate::input::set_unminimize_on_switch(args.unminimize_on_switch);
     crate::input::set_alt_tab_switch(args.alt_tab_switch);
     crate::input::set_alt_backtick_switch(args.alt_backtick_switch);
+    crate::input::set_alt_space_spotlight(args.alt_space_spotlight);
     crate::input::set_app_switcher_hud(args.app_switcher_hud);
     crate::input::set_map_ctrl_to_cmd(args.map_ctrl_to_cmd);
     crate::input::set_no_remap_apps(args.no_remap_apps.clone());
