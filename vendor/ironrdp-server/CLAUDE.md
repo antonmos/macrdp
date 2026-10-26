@@ -2037,7 +2037,22 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     reactivation, never for a losing candidate. Off by default (`None`), so the
     upstream-shaped path is byte-identical unless macrdp installs the handle.
 
-(26) Publish the client's desktop scale factor to a shared cell (NOT upstreamed;
+(26) Client input is read off the `Self` lock (NOT upstreamed; added 2026-10-26).
+    `client_loop` reads the socket in its own `read_pdus` arm: fast-path input
+    goes straight to the input handler, X224 PDUs go through a bounded queue
+    to `dispatch_pdu`, which still takes the lock. `dispatch_events` holds the lock across its
+    socket writes, so a write blocked on a client slow to drain used to stop
+    the server reading at all; input froze, and a client that sends input from
+    its UI thread then blocked on its own full socket. X224 PDUs still queued
+    when a reactivation ends the loop go into `read_ahead` and replay ahead of
+    the reactivation's input backlog, as they would have from the socket.
+
+(27) `TCP_NODELAY` on the accepted RDP socket (NOT upstreamed; added
+    2026-10-26). Upstream leaves Nagle on, so the short tail segment of each
+    frame waits for the ACK of the previous one, which the client may delay;
+    set at both accept sites (the idle listener and the preemption race).
+
+(28) Publish the client's desktop scale factor to a shared cell (NOT upstreamed;
     added 2026-10-11; pairs with `vendor/ironrdp-acceptor` divergence (5)).
     `RdpServer` gains `desktop_scale_factor: Option<Arc<AtomicU32>>` (default
     None) + setter `set_desktop_scale_factor_handle`, the same shape as the
@@ -2055,8 +2070,7 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     1× monitor). Re-storing it on the reactivation that resize triggers put the
     connect-time 200 back right before the re-mode, so a 1× monitor got a 2× UI.
 
-
-(27) 32-bpp pointers carry an AND mask (NOT upstreamed; added 2026-10-11).
+(29) 32-bpp pointers carry an AND mask (NOT upstreamed; added 2026-10-11).
     `UpdateEncoder::rgba_pointer` used to send `and_mask: &[]`. MS-RDPBCGR
     2.2.9.1.1.4.4 makes the 1-bpp AND mask part of every color pointer, and
     Windows App for macOS (build 68651) never changed its pointer from the

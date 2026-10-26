@@ -197,7 +197,7 @@ context; the RETIRED ones were NOT re-applied. Server-fork div-9 (honor-size for
     in `BasicSettingsWaitInitial` from `gcc_blocks.core.optional_data.
     desktop_scale_factor` (0 when absent), carried across reactivation, and
     surfaced as `pub desktop_scale_factor: u32` on `AcceptorResult`. Consumed by
-    the vendored server's divergence (26), which macrdp's `--virtual-display-hidpi
+    the vendored server's divergence (28), which macrdp's `--virtual-display-hidpi
     =auto` reads to pick a 2× display per connection (Windows App sends 200 with
     "Optimize for Retina displays", 100 without). Same additive GCC-surfacing
     shape as (2)/(4) → cleanly upstreamable.
