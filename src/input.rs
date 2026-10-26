@@ -1936,8 +1936,10 @@ mod macos {
     }
 
     /// The AX focused-app pid the focus poller last observed (0 = none yet).
-    /// Every change it sees is already folded into `SWITCHER_FRONT`, so a live
-    /// AX read that DIFFERS from this is newer than anything we've recorded.
+    /// The poller has already OFFERED every change it saw to `SWITCHER_FRONT`
+    /// (it may have been declined: mid-cycle, inside the post-commit settle
+    /// window, or a non-regular app), so a live AX read that DIFFERS from this
+    /// is a change nothing has considered yet — the case Cmd+` trusts AX for.
     static AX_POLLER_LAST_SEEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
     /// Which source names the app Cmd+` should act on. The live AX focus is
@@ -2480,13 +2482,48 @@ mod macos {
     /// and resolves its owning app's bundle id. This is the only signal that
     /// catches an Electron app (VSCode) clicked into in a headless/virtual-display
     /// session: it takes key focus without emitting an activation, so the
-    /// activation observer and `AXFocusedApplication` never see it. Best-effort —
-    /// runs on the dedicated CFRunLoop thread (where AX is reliable, unlike the
-    /// input thread) and updates the cell before the user's next keystroke. Only
-    /// armed when `--map-ctrl-to-cmd` is on (the only consumer). No-op if AX can't
-    /// resolve a window/app at the point (menu bar, empty space).
+    /// activation observer and `AXFocusedApplication` never see it. Also feeds
+    /// the app switcher (`note_focus_change`) for activating clicks. No-op if AX
+    /// can't resolve a window/app at the point (menu bar, empty space).
+    ///
+    /// Runs on its OWN thread (`click-focus-hittest`), not the shared
+    /// `runloop_thread`, and coalesces latest-wins: a hit-test over a hung app
+    /// blocks until AX gives up (measured ~1.5 s), and since this now runs on
+    /// every plain left click for everyone, queueing those on the shared thread
+    /// would stall lazy file paste and the activation observer behind a few
+    /// clicks on a beachballing app. Here a hung app costs at most one blocked
+    /// hit-test; clicks that arrive meanwhile replace each other and only the
+    /// newest runs. (A shorter AX messaging timeout isn't used because setting
+    /// one on the system-wide element changes it process-wide, which would also
+    /// cut short the switcher's window raises on slow apps.)
     fn update_focus_from_click(x: f64, y: f64, activating_click: bool) {
-        crate::runloop_thread::submit(move || unsafe {
+        use std::sync::{Condvar, Mutex, OnceLock};
+        static SLOT: Mutex<Option<(f64, f64, bool)>> = Mutex::new(None);
+        static WAKE: Condvar = Condvar::new();
+        static STARTED: OnceLock<()> = OnceLock::new();
+        STARTED.get_or_init(|| {
+            let _ = std::thread::Builder::new()
+                .name("click-focus-hittest".into())
+                .spawn(|| loop {
+                    let job = {
+                        let mut g = SLOT.lock().unwrap_or_else(|e| e.into_inner());
+                        while g.is_none() {
+                            g = WAKE.wait(g).unwrap_or_else(|e| e.into_inner());
+                        }
+                        g.take()
+                    };
+                    if let Some((x, y, activating)) = job {
+                        hit_test_click_focus(x, y, activating);
+                    }
+                });
+        });
+        *SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some((x, y, activating_click));
+        WAKE.notify_one();
+    }
+
+    /// The hit-test itself, for `update_focus_from_click`'s worker thread.
+    fn hit_test_click_focus(x: f64, y: f64, activating_click: bool) {
+        unsafe {
             use std::ffi::c_void;
             let systemwide = AXUIElementCreateSystemWide();
             if systemwide.is_null() {
@@ -2541,7 +2578,7 @@ mod macos {
                     }
                 }
             }
-        });
+        }
     }
 
     /// Copy an AX attribute (+1 retained), or None if absent/failed.
