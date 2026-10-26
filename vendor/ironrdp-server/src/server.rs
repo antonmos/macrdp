@@ -561,7 +561,7 @@ pub struct RdpServer {
     /// `MacInputHandler`) holds a clone and auto-selects a matching layout, so
     /// non-US clients type correctly with no manual configuration. 0 = unknown.
     keyboard_layout: Option<Arc<AtomicU32>>,
-    /// (vendored, divergence 28) Optional shared cell the server writes with
+    /// (vendored, divergence 29) Optional shared cell the server writes with
     /// the client's announced desktop scale factor (percent; 0 = not sent)
     /// when a client connects, before the display starts.
     desktop_scale_factor: Option<Arc<AtomicU32>>,
@@ -1380,7 +1380,7 @@ impl RdpServer {
         self.keyboard_layout = Some(handle);
     }
 
-    /// (vendored, divergence 28) Share a cell the server fills with the
+    /// (vendored, divergence 29) Share a cell the server fills with the
     /// client's announced desktop scale factor (percent, from Client Core
     /// Data; 0 = not sent) when a client connects — before the display's
     /// `updates()` runs, so the display can size itself for it. Must be
@@ -3487,7 +3487,7 @@ impl RdpServer {
             handle.store(result.keyboard_layout, Ordering::Relaxed);
             debug!(klid = result.keyboard_layout, "client keyboard layout announced");
         }
-        // (vendored, divergence 28) Publish the client's desktop scale factor.
+        // (vendored, divergence 29) Publish the client's desktop scale factor.
         // Initial accept only: a reactivation carries the connect-time value
         // over, and storing it again would undo a newer scale the client
         // announced mid-session in a monitor layout (the embedder updates the

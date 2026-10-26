@@ -2052,7 +2052,16 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     frame waits for the ACK of the previous one, which the client may delay;
     set at both accept sites (the idle listener and the preemption race).
 
-(28) Publish the client's desktop scale factor to a shared cell (NOT upstreamed;
+(28) `zstd-safe` 8.2 instead of upstream's 7.2 (NOT upstreamed; added
+    2026-10-27). zstd-safe 7.x has RUSTSEC-2026-0398 (`Seekable::decompress`)
+    and RUSTSEC-2026-0403 (streaming decompression of a legacy frame), and the
+    zstd-sys it pulls has RUSTSEC-2026-0410 (WebAssembly allocator), which
+    turned the daily cargo-deny scan red. The QOIZ encoder only compresses
+    (`CCtx`), so none of the three is reachable here; the bump is to keep the
+    scan meaningful. Only `Cargo.toml` changes, no code. Drop it once upstream
+    requires zstd-safe >= 8.2.
+
+(29) Publish the client's desktop scale factor to a shared cell (NOT upstreamed;
     added 2026-10-11; pairs with `vendor/ironrdp-acceptor` divergence (5)).
     `RdpServer` gains `desktop_scale_factor: Option<Arc<AtomicU32>>` (default
     None) + setter `set_desktop_scale_factor_handle`, the same shape as the
@@ -2070,7 +2079,7 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     1× monitor). Re-storing it on the reactivation that resize triggers put the
     connect-time 200 back right before the re-mode, so a 1× monitor got a 2× UI.
 
-(29) 32-bpp pointers carry an AND mask (NOT upstreamed; added 2026-10-11).
+(30) 32-bpp pointers carry an AND mask (NOT upstreamed; added 2026-10-11).
     `UpdateEncoder::rgba_pointer` used to send `and_mask: &[]`. MS-RDPBCGR
     2.2.9.1.1.4.4 makes the 1-bpp AND mask part of every color pointer, and
     Windows App for macOS (build 68651) never changed its pointer from the
