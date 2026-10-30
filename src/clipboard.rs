@@ -213,6 +213,43 @@ struct RemoteFetch {
 /// live (Windows App for macOS never answered a connect-time request).
 const STALE_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How often the pasteboard poller samples `changeCount`, retry waits included.
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+#[derive(Debug, PartialEq, Eq)]
+enum RetryWait {
+    /// The remote accepted the current wave's format list.
+    Accepted,
+    /// The pasteboard changed again; the newer copy supersedes the wave.
+    Changed,
+    /// Neither happened within the delay.
+    Elapsed,
+}
+
+/// Waits up to `delay` for the remote to accept the current advertise wave,
+/// checking every `step`. A pasteboard change wins over an acceptance.
+async fn wait_for_answer(
+    delay: Duration,
+    step: Duration,
+    accepted: impl Fn() -> bool,
+    mut changed: impl FnMut() -> bool,
+) -> RetryWait {
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return RetryWait::Elapsed;
+        }
+        tokio::time::sleep(step.min(deadline - now)).await;
+        if changed() {
+            return RetryWait::Changed;
+        }
+        if accepted() {
+            return RetryWait::Accepted;
+        }
+    }
+}
+
 /// Convert PNG/TIFF bytes from NSPasteboard into a CF_DIB payload: a
 /// `BITMAPINFOHEADER` (40 bytes) followed by 32bpp BGRA pixels in
 /// top-down order (negative `biHeight`). 32bpp is the most widely
@@ -504,7 +541,7 @@ impl ServerEventSender for MacCliprdr {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     continue;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                tokio::time::sleep(POLL_INTERVAL).await;
                 let current = pb::change_count();
                 if current == last_seen {
                     continue;
@@ -595,9 +632,11 @@ const ADVERTISE_RETRY_DELAYS: [Duration; 3] = [
 /// — otherwise a later re-advertise that gets rejected wipes
 /// `local_file_list` inside cliprdr and silently breaks an otherwise-working
 /// paste. The delays give each response time to arrive before the next retry
-/// decision. A newer wave (a newer Mac copy) supersedes this one, and a
-/// pasteboard that now holds our own write of the client's data, or nothing
-/// advertisable, ends it.
+/// decision. Each wait ends early on the client's acceptance or on a
+/// pasteboard change (#217: a second copy is announced at the next poll, not
+/// after the wait). A newer wave supersedes this one, and a pasteboard that
+/// now holds our own write of the client's data, or nothing advertisable,
+/// ends it.
 async fn advertise_wave(
     sender: &Sender,
     paths: &Paths,
@@ -610,6 +649,10 @@ async fn advertise_wave(
     // backend's `on_format_list_response` hook, which stamps `locked_gen`
     // with the current generation on `Ok`.
     let my_gen = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
+    // A pasteboard change during a retry wait ends the wave: either a newer
+    // Mac copy (the poller's next tick announces it) or our own write of the
+    // client's data, which must not be advertised back.
+    let start_cc = pb::change_count();
     let attempt = || {
         let current = pb::change_count();
         if own.is_own(current) {
@@ -627,12 +670,23 @@ async fn advertise_wave(
         Advertised::Sent => {}
     }
     for delay in ADVERTISE_RETRY_DELAYS {
-        tokio::time::sleep(delay).await;
-        if state.generation.load(Ordering::Relaxed) != my_gen {
-            break;
+        let answer = wait_for_answer(
+            delay,
+            POLL_INTERVAL,
+            || state.locked_gen.load(Ordering::Relaxed) == my_gen,
+            || pb::change_count() != start_cc,
+        )
+        .await;
+        match answer {
+            RetryWait::Changed => break,
+            RetryWait::Accepted => {
+                debug!(my_gen, "format list accepted; retry loop done");
+                break;
+            }
+            RetryWait::Elapsed => {}
         }
-        if state.locked_gen.load(Ordering::Relaxed) == my_gen {
-            debug!(my_gen, "format list accepted; retry loop done");
+        if state.generation.load(Ordering::Relaxed) != my_gen {
+            // Another wave (the connect-time one, or the poller's) took over.
             break;
         }
         match attempt() {
@@ -2109,6 +2163,51 @@ mod tests {
         let got = read_file_range(&f.0, 0, 8 * 1024 * 1024).unwrap();
         assert_eq!(got.len(), MAX_FILE_RANGE_BYTES as usize);
         assert!(got.iter().all(|&b| b == 0xAB));
+    }
+
+    #[tokio::test]
+    async fn a_retry_wait_ends_as_soon_as_the_remote_accepts() {
+        let started = std::time::Instant::now();
+        let answer = wait_for_answer(
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            || started.elapsed() >= Duration::from_millis(20),
+            || false,
+        )
+        .await;
+        assert_eq!(answer, RetryWait::Accepted);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_new_copy_wins_over_an_acceptance() {
+        let answer = wait_for_answer(
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            || true,
+            || true,
+        )
+        .await;
+        assert_eq!(answer, RetryWait::Changed);
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_retry_wait_runs_out_on_time() {
+        let started = std::time::Instant::now();
+        let mut checks = 0;
+        let answer = wait_for_answer(
+            Duration::from_millis(50),
+            Duration::from_millis(20),
+            || false,
+            || {
+                checks += 1;
+                false
+            },
+        )
+        .await;
+        assert_eq!(answer, RetryWait::Elapsed);
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        assert_eq!(checks, 3, "steps of 20, 20 and the 10 left");
     }
 
     #[cfg(target_os = "macos")]
