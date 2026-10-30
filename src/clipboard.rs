@@ -209,9 +209,15 @@ struct RemoteFetch {
 
 /// How long after a request went out its reply is waited for before it's
 /// presumed lost. Every FormatDataRequest should be answered (data or a
-/// failure), so this only bounds a misbehaving client — but one was seen
-/// live (Windows App for macOS never answered a connect-time request).
-const STALE_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+/// failure), so this only bounds a misbehaving client — one was seen live
+/// (Windows App for macOS never answered a connect-time request). It must be
+/// far longer than a slow-but-live reply: a reply that arrives after the
+/// grace is taken as the answer to the next copy's request, so too short a
+/// grace pastes one copy's data as another's (a 1080p CF_DIB is ~8 MB and
+/// can take well over 5 s over a VPN; `MAX_INCOMING_PAYLOAD` allows 50 MB).
+/// The cost of a long grace is bounded: after a truly lost reply, only the
+/// copies made within this window of the lost request go unfetched.
+const STALE_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How often the pasteboard poller samples `changeCount`, retry waits included.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -2491,6 +2497,38 @@ mod tests {
             rx.try_recv(),
             Ok(ServerEvent::Clipboard(ClipboardMessage::SendInitiatePaste(
                 _
+            )))
+        ));
+    }
+
+    /// A slow reply must not be presumed lost and then taken as the next
+    /// copy's answer. The scenario from review on #198: a large image copied
+    /// in Windows is still being answered 6 s later when the user copies
+    /// text; the text request must wait, and the image's late reply must be
+    /// discarded, not decoded and pasted as the text.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_slow_reply_is_discarded_not_taken_as_the_next_copys_answer() {
+        let (mut backend, mut rx) = test_backend();
+        backend.on_remote_copy(&[ClipboardFormat::new(ClipboardFormatId::CF_DIB)]);
+        let _ = rx.try_recv();
+        backend.fetch.current_since =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(6));
+
+        backend.on_remote_copy(&[ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)]);
+        assert!(
+            rx.try_recv().is_err(),
+            "the text request must wait for the image's reply"
+        );
+
+        let dib = vec![0x41, 0x00, 0x42, 0x00, 0x43, 0x00, 0x00, 0x00];
+        backend.on_format_data_response(FormatDataResponse::new_data(dib));
+        assert_ne!(pb::read_string().as_deref(), Some("ABC"));
+        // The stale reply was discarded and the text request went out.
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ServerEvent::Clipboard(ClipboardMessage::SendInitiatePaste(
+                ClipboardFormatId::CF_UNICODETEXT
             )))
         ));
     }
