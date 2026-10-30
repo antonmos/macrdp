@@ -202,12 +202,129 @@ fn should_remap_click(remap_on: bool, ctrl: bool, cmd: bool, alt: bool, excluded
     remap_on && ctrl && !cmd && !alt && !excluded
 }
 
+/// What `resync_modifiers_if_stale` must do for one trigger. Split out pure —
+/// like `should_remap_click` — so the decision table is unit-tested on every
+/// target; the method itself only gathers the inputs and performs the effects.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct ResyncPlan {
+    /// Buttons to release with a synthetic Up (left, right, middle). Only on a
+    /// connection edge: an idle gap must never drop a drag in progress.
+    release_buttons: [bool; 3],
+    /// Drop `remapped_keys` and the click latch. Connection edge only —
+    /// clearing the latch on an idle gap would undo the down/up consistency fix.
+    clear_gesture_state: bool,
+    /// Post the `FlagsChanged` that releases held modifiers. Gated on a
+    /// modifier actually being held, so a clean reconnect doesn't bother macOS.
+    post_flags_changed: bool,
+}
+
+/// `reconnected`: a new served connection began. `buttons_down`: left, right,
+/// middle as currently tracked. `mods_held`: any non-lock modifier is held.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn resync_plan(reconnected: bool, buttons_down: [bool; 3], mods_held: bool) -> ResyncPlan {
+    ResyncPlan {
+        release_buttons: if reconnected {
+            buttons_down
+        } else {
+            [false; 3]
+        },
+        clear_gesture_state: reconnected,
+        post_flags_changed: mods_held,
+    }
+}
+
+/// Wheel units per posted scroll line; see `Inner::scroll`.
+const SCROLL_UNITS_PER_LINE: i32 = 60;
+
+/// Adds a wheel delta to the running total and returns the lines to post (at
+/// most 5 per event) and the new total. Whatever the cap cuts off is dropped,
+/// and a reversal starts from zero.
+fn scroll_lines(accum: i32, delta: i32) -> (i32, i32) {
+    let accum = if delta != 0 && accum != 0 && (accum < 0) != (delta < 0) {
+        delta
+    } else {
+        accum.saturating_add(delta)
+    };
+    let lines = accum / SCROLL_UNITS_PER_LINE;
+    (lines.clamp(-5, 5), accum - lines * SCROLL_UNITS_PER_LINE)
+}
+
 #[cfg(test)]
 mod coord_tests {
     use super::{
-        is_remappable_shortcut, map_client_to_display, remove_switcher_selection,
-        should_alt_q_quit, should_remap_click,
+        is_remappable_shortcut, map_client_to_display, remove_switcher_selection, resync_plan,
+        scroll_lines, should_alt_q_quit, should_remap_click, ResyncPlan,
     };
+
+    #[test]
+    fn scroll_drops_what_the_cap_cuts_off() {
+        assert_eq!(scroll_lines(0, -1236), (-5, -36));
+        assert_eq!(scroll_lines(0, 30), (0, 30));
+        assert_eq!(scroll_lines(30, 30), (1, 0));
+    }
+
+    #[test]
+    fn scroll_saturates_instead_of_overflowing() {
+        assert_eq!(scroll_lines(59, i32::MAX), (5, i32::MAX % 60));
+    }
+
+    #[test]
+    fn scroll_reversal_ignores_the_previous_direction() {
+        let (_, accum) = scroll_lines(0, -1236);
+        assert_eq!(scroll_lines(accum, 120), (2, 0));
+    }
+
+    /// Connection edge: every tracked button is released, the gesture state is
+    /// cleared, and `FlagsChanged` is posted only if a modifier was held.
+    #[test]
+    fn resync_plan_connection_edge_releases_buttons_and_clears_state() {
+        // Mid-drag disconnect: left held, no modifier left.
+        assert_eq!(
+            resync_plan(true, [true, false, false], false),
+            ResyncPlan {
+                release_buttons: [true, false, false],
+                clear_gesture_state: true,
+                post_flags_changed: false,
+            },
+            "latch/remapped_keys are cleared even though no modifier was held"
+        );
+        // Every button + a held modifier.
+        assert_eq!(
+            resync_plan(true, [true, true, true], true),
+            ResyncPlan {
+                release_buttons: [true, true, true],
+                clear_gesture_state: true,
+                post_flags_changed: true,
+            }
+        );
+        // Clean reconnect: nothing to release, nothing to post — but state
+        // is still cleared.
+        assert_eq!(
+            resync_plan(true, [false; 3], false),
+            ResyncPlan {
+                release_buttons: [false; 3],
+                clear_gesture_state: true,
+                post_flags_changed: false,
+            }
+        );
+    }
+
+    /// Idle gap: modifiers only. A drag/click in progress inside a live
+    /// connection is legitimate state, and the latch must survive.
+    #[test]
+    fn resync_plan_idle_gap_touches_modifiers_only() {
+        assert_eq!(
+            resync_plan(false, [true, true, true], true),
+            ResyncPlan {
+                release_buttons: [false; 3],
+                clear_gesture_state: false,
+                post_flags_changed: true,
+            },
+            "buttons and latch survive an idle gap"
+        );
+        assert!(!resync_plan(false, [false; 3], false).post_flags_changed);
+    }
 
     /// Quitting from the switcher keeps the selection in place (the next app
     /// slides under it), wraps when the last entry goes, and ends at empty.
@@ -409,6 +526,17 @@ static ALT_BACKTICK_SWITCH: std::sync::atomic::AtomicBool =
 
 pub fn set_alt_backtick_switch(on: bool) {
     ALT_BACKTICK_SWITCH.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// When true, Option+Space opens Spotlight like Cmd+Space, for macOS clients
+/// whose own OS takes Cmd+Space before the RDP client sees it. Opt-in via
+/// `--alt-space-spotlight`; off by default so Option+Space still types a
+/// non-breaking space.
+static ALT_SPACE_SPOTLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_alt_space_spotlight(on: bool) {
+    ALT_SPACE_SPOTLIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// When true, Option+Q (i.e. Alt+Q forwarded from the client) is delivered to
@@ -798,8 +926,7 @@ mod macos {
 
     pub struct Inner {
         source: CGEventSource,
-        // Secondary source used *only* to mirror modifier FlagsChanged
-        // events. See `Inner::new` for why one source isn't enough.
+        // Source for modifier FlagsChanged events. See `Inner::new`.
         source_hid: CGEventSource,
         last_x: f64,
         last_y: f64,
@@ -890,12 +1017,10 @@ mod macos {
             //   screenshot, Mission Control, Show Desktop) checks before
             //   firing. Cmd+Tab is the canonical case.
             //
-            // A flagsChanged event posted from one source does NOT update the
-            // other. So we maintain both: the session source is the canonical
-            // one used for every event, and `source_hid` exists solely to
-            // mirror modifier flagsChanged so symbolic hotkeys also see Cmd
-            // as held. Without the mirror, Cmd+Tab is a no-op; with it, both
-            // classes of shortcut work.
+            // The session source is used for every key event; modifier
+            // flagsChanged go through `source_hid` only, because HID state
+            // feeds the combined session state and symbolic hotkeys need it.
+            // Without it, Cmd+Tab is a no-op.
             let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
                 .map_err(|_| anyhow!("CGEventSource::new(CombinedSessionState) failed"))?;
             let source_hid = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
@@ -1068,31 +1193,36 @@ mod macos {
                 return;
             }
 
-            if reconnected {
-                // Connection edge: release any button macOS still believes is
-                // held — we posted the Down, the connection died before the Up.
-                // Go through `button()` so the Up carries the same (latched)
-                // flags the Down did and the click bookkeeping stays paired,
-                // and do it BEFORE clearing modifiers so the pair can't
-                // disagree. This also zeroes `left_down`/`right_down`/
-                // `middle_down`, so the next move posts as MouseMoved, not a
-                // phantom `LeftMouseDragged`.
-                if self.left_down {
-                    self.button(CGMouseButton::Left, false);
-                }
-                if self.right_down {
-                    self.button(CGMouseButton::Right, false);
-                }
-                if self.middle_down {
-                    self.button(CGMouseButton::Center, false);
-                }
+            let plan = super::resync_plan(
+                reconnected,
+                [self.left_down, self.right_down, self.middle_down],
+                self.mods.any_held(),
+            );
+
+            // Connection edge: release any button macOS still believes is
+            // held — we posted the Down, the connection died before the Up.
+            // Go through `button()` so the Up carries the same (latched)
+            // flags the Down did and the click bookkeeping stays paired,
+            // and do it BEFORE clearing modifiers so the pair can't
+            // disagree. This also zeroes `left_down`/`right_down`/
+            // `middle_down`, so the next move posts as MouseMoved, not a
+            // phantom `LeftMouseDragged`.
+            let [rel_left, rel_right, rel_middle] = plan.release_buttons;
+            if rel_left {
+                self.button(CGMouseButton::Left, false);
+            }
+            if rel_right {
+                self.button(CGMouseButton::Right, false);
+            }
+            if rel_middle {
+                self.button(CGMouseButton::Center, false);
             }
 
             // Snapshot first so the log shows WHAT was stuck.
             let stuck = self.mods.cg_flags().bits();
-            let had_mods = self.mods.clear_non_lock();
+            self.mods.clear_non_lock();
 
-            if reconnected {
+            if plan.clear_gesture_state {
                 // Drop the remaining per-gesture state regardless of whether a
                 // modifier was held (see the doc): an outstanding remapped
                 // key-down or a latch left by a Down whose Up never came.
@@ -1104,7 +1234,7 @@ mod macos {
             // earlier FlagsChanged left the session state asserting it, and
             // macOS derives press-vs-release from the flags diff, so one event
             // carrying the now-empty set releases all of them.
-            if had_mods {
+            if plan.post_flags_changed {
                 debug!(
                     reason = if reconnected {
                         "new connection"
@@ -1115,6 +1245,9 @@ mod macos {
                     "clearing stale held modifiers"
                 );
                 self.post_flags_changed(VK_LCMD);
+                // The modifier that held an open Cmd+Tab or Option+Tab switcher is gone, so close it.
+                CMD_RELEASE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                commit_cycle_session();
             }
         }
 
@@ -1162,8 +1295,8 @@ mod macos {
             };
             self.refresh_auto_layout();
 
-            // Modifier path: update per-side state and emit FlagsChanged
-            // mirrored to both sources. We do this BEFORE any of the
+            // Modifier path: update per-side state and emit FlagsChanged.
+            // We do this BEFORE any of the
             // symbolic-hotkey logic so the held-modifier check in
             // try_symbolic_hotkey sees the just-pressed modifier.
             if ModifierState::is_modifier_vk(vk) {
@@ -1317,33 +1450,23 @@ mod macos {
             ev.post(CGEventTapLocation::HID);
         }
 
-        /// Emit a FlagsChanged event for `vk` from both sources. We send
-        /// the same event twice so two different parts of macOS see the
-        /// modifier as held:
-        ///   - CombinedSessionState backs `[NSEvent modifierFlags]` —
-        ///     what Cocoa apps query for Cmd+C / Cmd+Q / Cmd+~.
-        ///   - HIDSystemState backs the modifier view that WindowServer's
-        ///     symbolic-hotkey dispatcher (Dock, Spotlight, screencapture,
-        ///     Mission Control, Show Desktop) checks before firing.
-        ///
-        /// A FlagsChanged posted from one source does NOT update the other,
-        /// so without the mirror you get either app shortcuts or symbolic
-        /// hotkeys but not both.
+        /// Emit one FlagsChanged event for `vk` from the HID source. The
+        /// HIDSystemState feeds the CombinedSessionState, so a single post
+        /// updates both the symbolic-hotkey view and `[NSEvent modifierFlags]`.
+        /// Posting it from both sources delivered every modifier change to
+        /// apps twice, and double-tap shortcuts (VS Code's `shift shift`)
+        /// fired on a single press.
         fn post_flags_changed(&self, vk: u16) {
-            let flags = self.mods.cg_flags();
-            for source in [&self.source, &self.source_hid] {
-                // `down` parameter is ignored for FlagsChanged: macOS
-                // derives press-vs-release purely from the diff between
-                // the prior flags state and the new flags carried on the
-                // event. We pass `true` for shape only.
-                let Ok(ev) = CGEvent::new_keyboard_event(source.clone(), vk, true) else {
-                    warn!(vk, "CGEvent::new_keyboard_event failed (modifier)");
-                    continue;
-                };
-                ev.set_flags(flags);
-                ev.set_type(CGEventType::FlagsChanged);
-                ev.post(CGEventTapLocation::HID);
-            }
+            // `down` parameter is ignored for FlagsChanged: macOS derives
+            // press-vs-release purely from the diff between the prior flags
+            // state and the new flags carried on the event.
+            let Ok(ev) = CGEvent::new_keyboard_event(self.source_hid.clone(), vk, true) else {
+                warn!(vk, "CGEvent::new_keyboard_event failed (modifier)");
+                return;
+            };
+            ev.set_flags(self.mods.cg_flags());
+            ev.set_type(CGEventType::FlagsChanged);
+            ev.post(CGEventTapLocation::HID);
         }
 
         /// Swap Control→Command in both the public CGEventFlag bits and the
@@ -1405,14 +1528,13 @@ mod macos {
             let swapped = self.ctrl_to_cmd_flags();
 
             if down {
-                for source in [&self.source, &self.source_hid] {
-                    let Ok(ev) = CGEvent::new_keyboard_event(source.clone(), VK_LCMD, true) else {
-                        warn!("CGEvent::new_keyboard_event failed (ctrl→cmd flags)");
-                        continue;
-                    };
+                if let Ok(ev) = CGEvent::new_keyboard_event(self.source_hid.clone(), VK_LCMD, true)
+                {
                     ev.set_flags(swapped);
                     ev.set_type(CGEventType::FlagsChanged);
                     ev.post(CGEventTapLocation::HID);
+                } else {
+                    warn!("CGEvent::new_keyboard_event failed (ctrl→cmd flags)");
                 }
             }
             if let Ok(ev) = CGEvent::new_keyboard_event(self.source.clone(), vk, down) {
@@ -1542,6 +1664,17 @@ mod macos {
                 && vk == VK_GRAVE
             {
                 ax_cycle_windows_of_front(shift);
+                return true;
+            }
+
+            if super::ALT_SPACE_SPOTLIGHT.load(std::sync::atomic::Ordering::Relaxed)
+                && opt
+                && !cmd
+                && !ctrl
+                && !shift
+                && vk == VK_SPACE
+            {
+                invoke_spotlight();
                 return true;
             }
 
@@ -1857,18 +1990,15 @@ mod macos {
             // RDP wheel rotation units are 120 per "tick", but this client
             // slices a single gesture into many small legacy MOUSE PDU
             // events (observed raw magnitude ~2-40 per event, not one
-            // 120-per-notch value). A flat `delta / SCALE` per event
+            // 120-per-notch value). A flat per-event division
             // truncates almost every one of those to zero — scroll never
             // moves at all. Accumulate the raw delta across calls instead,
             // and only emit whole lines once the running total crosses
-            // SCALE, carrying the remainder forward so no motion is lost.
-            const SCALE: i32 = 60;
-            self.scroll_v_accum += vertical;
-            self.scroll_h_accum += horizontal;
-            let v = (self.scroll_v_accum / SCALE).clamp(-5, 5);
-            let h = (self.scroll_h_accum / SCALE).clamp(-5, 5);
-            self.scroll_v_accum -= v * SCALE;
-            self.scroll_h_accum -= h * SCALE;
+            // SCROLL_UNITS_PER_LINE (see `scroll_lines`).
+            let (v, v_accum) = super::scroll_lines(self.scroll_v_accum, vertical);
+            let (h, h_accum) = super::scroll_lines(self.scroll_h_accum, horizontal);
+            self.scroll_v_accum = v_accum;
+            self.scroll_h_accum = h_accum;
             if v == 0 && h == 0 {
                 return;
             }
