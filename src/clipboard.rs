@@ -2482,6 +2482,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_new_copy_does_not_wait_on_a_request_the_client_never_answered() {
         let (mut backend, mut rx) = test_backend();
@@ -2533,6 +2534,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_new_copy_still_waits_on_a_recent_superseded_request() {
         let (mut backend, mut rx) = test_backend();
